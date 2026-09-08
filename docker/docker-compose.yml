@@ -1,0 +1,65 @@
+# docker compose -f docker/docker-compose.yml build
+# docker compose -f docker/docker-compose.yml run --rm cf
+#
+# Run docker/host-setup.sh first, then:
+#   export USER_UID=$(id -u) USER_GID=$(id -g) PLUGDEV_GID=$(getent group plugdev | cut -d: -f3)
+
+services:
+  cf:
+    build:
+      # Context is the STACK ROOT: the Dockerfile copies cf_core.py from there
+      # and compares it against the copy inside src/.
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: "${ROS_DISTRO:-humble}"
+        USER_UID: "${USER_UID:-1000}"
+        USER_GID: "${USER_GID:-1000}"
+        PLUGDEV_GID: "${PLUGDEV_GID:-46}"
+        CFLIB_VERSION: "${CFLIB_VERSION:-cflib}"
+        PIP_EXTRA: "${PIP_EXTRA:-}"
+    image: cfvicon:base
+    init: true
+    stdin_open: true          # keyboard teleop needs a TTY it can put in raw mode
+    tty: true
+
+    # DDS must reach the Vicon PC on the LAN. Bridge networking puts the
+    # container behind NAT, where discovery locators are unroutable and
+    # multicast does not traverse -- so host networking, not a port list.
+    network_mode: host
+
+    # Shared memory across the boundary. Not needed for the LAN link, and the
+    # image forces UDP anyway, but harmless and useful if you later turn SHM
+    # back on. Docker's default /dev/shm is only 64 MB.
+    ipc: host
+    shm_size: "512m"
+
+    environment:
+      # ONE PER TEAM. Every team on domain 0 will see each other's topics and
+      # each other's setpoints. Safe range on Linux is 0-101 and 215-232.
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      # Must be unset or 0, or the container cannot see the Vicon PC at all.
+      ROS_LOCALHOST_ONLY: "0"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+
+    volumes:
+      # A LIVE view of the host's USB tree, deliberately not `devices:`.
+      # `devices:`/--device grants only the nodes that exist at container start;
+      # unplug and replug the radio and it gets a new bus/address, a new device
+      # node, and the container was never granted it. A bind mount of the
+      # directory shows nodes created later.
+      - /dev/bus/usb:/dev/bus/usb
+      # The editable copy, owned by you thanks to USER_UID/USER_GID.
+      # This deliberately does NOT shadow the compiled workspace: the image
+      # builds into /opt/cfvicon, so `ros2 run crazyflie_ros ...` keeps working
+      # regardless of what is mounted here. Edit a .py under /ws and rerun it
+      # directly; edit anything under src/ and rebuild the image.
+      - ../:/ws:rw
+
+    # Permission for the whole USB char major (189), so hot-plugged nodes are
+    # usable too. This is the piece that lets us avoid `privileged: true`.
+    device_cgroup_rules:
+      - "c 189:* rmw"
+
+    working_dir: /ws
+    command: bash

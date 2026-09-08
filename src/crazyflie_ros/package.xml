@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>crazyflie_ros</name>
+  <version>1.0.0</version>
+  <description>
+    ROS 2 driver and keyboard teleop for a Vicon-fed Crazyflie 2.1+.
+    The driver owns the Crazyradio link, injects mocap pose into the onboard
+    EKF, and runs the safety supervisor shared with the standalone
+    crazyflie_vicon_teleop.py via cf_core.py.
+  </description>
+  <maintainer email="sriram.gaddipati@gmail.com">cs</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>crazyflie_interfaces</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

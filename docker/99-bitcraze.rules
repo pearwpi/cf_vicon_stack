@@ -1,0 +1,19 @@
+# Bitcraze USB permissions. INSTALL ON THE HOST, not in a container:
+#   sudo cp 99-bitcraze.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+# udev is a host daemon reachable only over a Unix socket, so a container can
+# neither install nor trigger these. The ownership the container sees on
+# /dev/bus/usb/... is exactly what host udev stamped on the node.
+
+# Crazyradio PA and Crazyradio 2.0 in CRPA-emulation mode (normal operation)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="7777", MODE="0664", GROUP="plugdev"
+# Crazyradio bootloader (nRF24LU1)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="0101", MODE="0664", GROUP="plugdev"
+# Crazyflie over USB (STM32 CDC-ACM)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE="0664", GROUP="plugdev"
+
+# If `lsusb` shows your dongle with a DIFFERENT product id -- a Crazyradio 2.0
+# running the native (non-emulation) firmware may -- add a line for it here.
+# Bitcraze's published rules cover 7777 only, and cflib's crazyradio driver
+# knows only 0x7777, so a dongle that enumerates as something else will not be
+# found by cflib regardless of permissions.
