@@ -1,0 +1,17 @@
+build/
+install/
+log/
+cache/
+__pycache__/
+*.pyc
+_backup_*/
+_to_delete/
+*.tlog
+*.tlog.raw
+*.parm
+# Run data is not source. Two exceptions: the replay fixture the test suite
+# needs, and anything filed under evidence/ as the record behind a finding.
+*.csv
+!tilt_capture_1786563877.csv
+!evidence/
+!evidence/**

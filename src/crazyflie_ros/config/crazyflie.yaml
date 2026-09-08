@@ -1,0 +1,39 @@
+# Parameters for the Vicon-fed Crazyflie driver.
+#
+# Units are metres, seconds, degrees per second, and Hz. Read the UNITS block
+# at the top of crazyflie_server.py before changing anything that touches yaw.
+
+/crazyflie_server:
+  ros__parameters:
+    uri: "radio://0/80/2M/E7E7E7E701"
+    vicon_topic: "/vicon/crazyflie1/crazyflie1"
+    prefix: "cf1"
+
+    control_hz: 50.0          # setpoint transmit rate
+    extpose_hz: 50.0          # mocap -> EKF injection rate; keep <= 100 on a 2M link
+    mocap_expected_hz: 100.0  # what Vicon is expected to publish at
+
+    # No cmd_* for this long while flying and the driver stops relaying and
+    # holds position. Must stay well inside the firmware's own 500 ms
+    # COMMANDER_WDT_TIMEOUT_STABILIZE so that we decide, not the firmware.
+    command_timeout: 0.30
+
+    max_yaw_rate_dps: 720.0   # above this AND >45 deg in one frame -> solver flip
+    yaw_sign: 1               # flip to -1 if yaw commands act backwards.
+                              # VERIFY WITH THE PROPELLERS OFF.
+    yaw_offset: 0.0           # empirical rotation applied to the injected quat
+
+    pos_only: false           # true = withhold the quaternion, inject position only
+    no_fly: false             # true = connect and inject, never spin a motor
+
+    hover_z: 0.60
+    volume: [2.0, 2.0, 1.20]  # width(x), depth(y), ceiling(z); auto-centred on
+                              # the drone's position at startup
+    # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]   # overrides `volume` if set
+
+/crazyflie_teleop:
+  ros__parameters:
+    prefix: "cf1"
+    rate_hz: 50.0
+    hover_z: 0.60
+    keyboard: "termios"       # "termios" works over SSH; "pygame" needs a display
