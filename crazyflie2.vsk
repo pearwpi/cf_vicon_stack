@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<KinematicModel VERSION="3.2">
+	<Parameters>
+		<Parameter NAME="crazyflie2_crazyflie21_x" VALUE="41.336240781544788" PRIOR="41.336240781544788" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie21_y" VALUE="-34.075975991488406" PRIOR="-34.075975991488406" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie21_z" VALUE="-8.8436356928436908" PRIOR="-8.8436356928436908" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie22_x" VALUE="24.497091028220623" PRIOR="24.497091028220623" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie22_y" VALUE="-14.85432721473488" PRIOR="-14.85432721473488" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie22_z" VALUE="-0.027628205105884263" PRIOR="-0.027628205105884263" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie23_x" VALUE="8.8946805739543748" PRIOR="8.8946805739543748" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie23_y" VALUE="-1.6521851504917322" PRIOR="-1.6521851504917322" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie23_z" VALUE="9.3228914293054004" PRIOR="9.3228914293054004" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie24_x" VALUE="-18.6100733881011" PRIOR="-18.6100733881011" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie24_y" VALUE="-13.27162029949011" PRIOR="-13.27162029949011" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie24_z" VALUE="-0.10468828275020314" PRIOR="-0.10468828275020314" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie25_x" VALUE="-38.030537549068768" PRIOR="-38.030537549068768" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie25_y" VALUE="-29.264216827101251" PRIOR="-29.264216827101251" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie25_z" VALUE="-10.167411279306179" PRIOR="-10.167411279306179" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie26_x" VALUE="29.397825112108521" PRIOR="29.397825112108521" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie26_y" VALUE="30.2551911936512" PRIOR="30.2551911936512" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie26_z" VALUE="0.013114102059944344" PRIOR="0.013114102059944344" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie27_x" VALUE="-47.485226558658411" PRIOR="-47.485226558658411" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie27_y" VALUE="62.863134289655235" PRIOR="62.863134289655235" HIDDEN="false"/>
+		<Parameter NAME="crazyflie2_crazyflie27_z" VALUE="9.8073579286399308" PRIOR="9.8073579286399308" HIDDEN="false"/>
+	</Parameters>
+	<Skeleton RGB="93 93 93">
+		<Segment NAME="crazyflie2" OPACITY="255" BOUNDS="-47.485227 -34.075976 -10.167411 41.336241 62.863134 9.807358" RGB="255 164 0" HIDDEN="false" DRAW-END-RATIO="1" DRAW-HEIGHT="0.5" DRAW-TWIST="0" DRAW-WIDTH="0.5" DRAW-STYLE="box" DRAW-SHADING="shaded-smooth">
+			<JointFree PRE-ORIENTATION="0 0 0" PRE-POSITION="0 0 0" INVERSE-POST-ORIENTATION="0 0 0" INVERSE-POST-POSITION="0 0 0" MEAN="0 0 0 0 0 0" COVARIANCE="1.0966227112321507 0 0 0 0 0 0 1.0966227112321507 0 0 0 0 0 0 1.0966227112321507 0 0 0 0 0 0 10000 0 0 0 0 0 0 10000 0 0 0 0 0 0 10000" RANGE-CENTRING-STATE="0 0 0 0 0 0" RANGE-MATRIX="1 0 0 0 0 0 0 1 0 0 0 0 0 0 1 0 0 0 0 0 0 1 0 0 0 0 0 0 1 0 0 0 0 0 0 1">
+				<JointTemplate PRE-ORIENTATION="0 0 0" PRE-POSITION="0 0 0" INVERSE-POST-ORIENTATION="0 0 0" INVERSE-POST-POSITION="0 0 0"/>
+			</JointFree>
+		</Segment>
+	</Skeleton>
+	<MarkerSet>
+		<Markers>
+			<Marker NAME="crazyflie21" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie22" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie23" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie24" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie25" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie26" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+			<Marker NAME="crazyflie27" RADIUS="12.5" RGB="255 164 0" STATUS="required" VIEW-ANGLE="0"/>
+		</Markers>
+		<Sticks>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie22" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie23" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie24" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie25" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie26" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie21" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie22" MARKER2="crazyflie23" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie22" MARKER2="crazyflie24" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie22" MARKER2="crazyflie25" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie22" MARKER2="crazyflie26" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie22" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie23" MARKER2="crazyflie24" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie23" MARKER2="crazyflie25" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie23" MARKER2="crazyflie26" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie23" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie24" MARKER2="crazyflie25" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie24" MARKER2="crazyflie26" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie24" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie25" MARKER2="crazyflie26" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie25" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+			<Stick MARKER1="crazyflie26" MARKER2="crazyflie27" RGB1="255 164 0" RGB2="255 164 0"/>
+		</Sticks>
+	</MarkerSet>
+	<TargetSet>
+		<Targets>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie21" OPACITY="255" POSITION="'crazyflie2_crazyflie21_x' 'crazyflie2_crazyflie21_y' 'crazyflie2_crazyflie21_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie22" OPACITY="255" POSITION="'crazyflie2_crazyflie22_x' 'crazyflie2_crazyflie22_y' 'crazyflie2_crazyflie22_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie23" OPACITY="255" POSITION="'crazyflie2_crazyflie23_x' 'crazyflie2_crazyflie23_y' 'crazyflie2_crazyflie23_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie24" OPACITY="255" POSITION="'crazyflie2_crazyflie24_x' 'crazyflie2_crazyflie24_y' 'crazyflie2_crazyflie24_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie25" OPACITY="255" POSITION="'crazyflie2_crazyflie25_x' 'crazyflie2_crazyflie25_y' 'crazyflie2_crazyflie25_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie26" OPACITY="255" POSITION="'crazyflie2_crazyflie26_x' 'crazyflie2_crazyflie26_y' 'crazyflie2_crazyflie26_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+			<TargetLocalPointToWorldPoint COVARIANCE="1 0 0 0 1 0 0 0 1" FILL-GAPS="false" GAUSSIAN="true" HIDDEN="false" MARKER="crazyflie27" OPACITY="255" POSITION="'crazyflie2_crazyflie27_x' 'crazyflie2_crazyflie27_y' 'crazyflie2_crazyflie27_z'" RGB="93 93 93" SEGMENT="crazyflie2" WEIGHT="1" DRAW-STYLE="None">
+				<TargetLocalPointToWorldPointTemplate/>
+			</TargetLocalPointToWorldPoint>
+		</Targets>
+	</TargetSet>
+</KinematicModel>
+
