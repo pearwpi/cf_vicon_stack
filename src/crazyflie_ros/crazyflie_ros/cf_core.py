@@ -122,7 +122,7 @@ def yaw_deg_of(qx, qy, qz, qw) -> float:
 def tilt_deg_of(qx, qy, qz, qw) -> float:
     """Angle between the body's reported Z axis and world +Z.
 
-    Convention-free: it reads only R[2][2] = 1 - 2(qx^2 + qy^2), so no Euler
+    Convention-free: it reads only `R[2][2] = 1 - 2(qx^2 + qy^2)`, so no Euler
     order, no roll/pitch sign convention, and -- the point of it -- no +/-180
     wrap. A body created upside down reports Euler roll near +/-180, where a
     naive reading looks like plausible noise; this returns ~180 and cannot be
@@ -290,7 +290,7 @@ def clamp_alt(z, lo, hi):
 def prearm_check(pose, bounds, pos_only=False, tilt_limit=PREARM_TILT_DEG):
     """Refuse takeoff BEFORE arming rather than after. Returns (ok, reasons).
 
-    1. UPRIGHT, from R[2][2] so the +/-180 Euler wrap cannot disguise it. An
+    1. UPRIGHT, from `R[2][2]` so the +/-180 Euler wrap cannot disguise it. An
     inverted template reports a steady, well-behaved attitude with ZERO yaw
     rejects, so every flip-based test passes it; injecting it tells the EKF
     the drone is upside down and the controller drives into the floor at
