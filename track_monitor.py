@@ -13,9 +13,9 @@ Findings 1.7 predicts yes. This measures it.
     python3 track_monitor.py --topic /vicon/crazyflie2/crazyflie2
     python3 track_monitor.py --topic ... --csv track_log.csv
 
-Needs the bridge built with patch_track_quality.py, which publishes the
-companion topic <topic>/quality. Without it the marker columns read "--" and
-only the yaw side works.
+Needs a bridge new enough to publish the companion topic <topic>/quality.
+Without it the marker columns read "--" and only the yaw side works;
+rebuild the vicon_receiver image if you see that.
 
 Touches nothing the drone flies on. Read-only, in its own process.
 """
@@ -115,8 +115,8 @@ class Monitor:
                 self.have_quality = True
                 print("  quality %s  [%s]" % (qtopic, types[0]))
         if not self.have_quality:
-            print("  quality %s  NOT PUBLISHED -- run patch_track_quality.py "
-                  "and rebuild vicon_receiver" % qtopic)
+            print("  quality %s  NOT PUBLISHED -- rebuild the "
+                  "vicon_receiver image" % qtopic)
 
         self.visible = self.expected = None
         self.quality = -1.0
@@ -255,8 +255,7 @@ class Monitor:
                   "acceptance test passed.")
         elif not self.have_quality:
             print("\n  Cannot attribute these: the quality topic was not "
-                  "published.\n  Run patch_track_quality.py and rebuild "
-                  "vicon_receiver.")
+                  "published.\n  Rebuild the vicon_receiver image.")
         else:
             print("    with marker loss within 200 ms : %d" % self.flips_with_loss)
             print("    with a complete marker set     : %d" % self.flips_clean)

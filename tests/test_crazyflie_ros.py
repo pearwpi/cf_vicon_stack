@@ -26,8 +26,9 @@ import sys
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PKG = os.path.join(HERE, "src", "crazyflie_ros")
-sys.path.insert(0, HERE)
+ROOT = os.path.dirname(HERE)
+PKG = os.path.join(ROOT, "src", "crazyflie_ros")
+sys.path.insert(0, ROOT)
 sys.path.insert(0, PKG)
 
 PASS = FAIL = 0
@@ -371,7 +372,7 @@ for k in ("QUAT_DEAD_S", "MOCAP_DEAD_S", "MOCAP_STALE_S", "FLIP_GAP_CAP_S",
     check(f"same {k}", getattr(T, k) == getattr(C, k))
 
 print("\n[G] every message field the driver touches exists in the vendored .msg")
-MSGDIR = os.path.join(HERE, "src", "crazyflie_interfaces", "msg")
+MSGDIR = os.path.join(ROOT, "src", "crazyflie_interfaces", "msg")
 
 
 def msg_fields(name):
@@ -425,7 +426,7 @@ print("\n[I] the merged vicon_probe keeps everything both old tools reported")
 import csv as _csv, io as _io, contextlib as _ctx           # noqa: E402
 import vicon_probe as V                                      # noqa: E402
 
-_cap = os.path.join(HERE, "tilt_capture_1786563877.csv")
+_cap = os.path.join(HERE, "fixtures", "tilt_capture_1786563877.csv")
 if os.path.exists(_cap):
     _rows = []
     for _r in _csv.DictReader(open(_cap)):

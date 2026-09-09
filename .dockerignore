@@ -10,6 +10,8 @@ _to_delete/
 # Captures are large and not needed in the image -- EXCEPT the one the test
 # suite replays during the build. .dockerignore has no trailing-comment
 # support, so the negation must sit on a line of its own, after the exclude.
-*.csv
-!tilt_capture_1786563877.csv
+# The ** matters: a plain *.csv does not cross a directory separator, so it
+# would leave docs/evidence/*.csv in the context.
+**/*.csv
+!tests/fixtures/*.csv
 .env

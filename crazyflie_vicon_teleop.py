@@ -39,6 +39,21 @@ WHAT THIS DOES NOT DO
   * The ~237 Hz Vicon stream is downsampled to 50 Hz for injection. Raise
     EXTPOSE_HZ only after measuring the radio's packet budget.
 
+MAP OF THIS FILE
+  CONFIGURATION DEFAULTS       every tunable, with the reason for its value
+  ROS 2 / VICON SOURCE         ViconSource (rclpy node) + ViconThread (wrapper)
+  RADIO                        link setup, arming, and why a claim failed
+  KEYBOARD BACKENDS            key table; the backends live in cf_keyboard.py
+  CRAZYFLIE TELEOP             Telemetry + Teleop -- the flight loop itself
+  BENCH AND VERIFICATION MODES --check, --frame-test, --motor-test
+  MAIN                         selfcheck() then argument dispatch
+
+It is one file on purpose. Teleop, the Vicon source and the radio helpers share
+state that would become a cross-module interface if they were split, and
+selfcheck() parses this module's own source, so it has to live beside it. Every
+guard it enforces is in cf_core.py, which the ROS driver imports too -- that is
+where to look for the safety logic, not here.
+
 DEPENDENCIES: pip install cflib; pygame optional; ROS 2 rclpy+geometry_msgs sourced.
 
 USAGE
@@ -479,6 +494,13 @@ class ViconThread:
         except Exception:
             pass
 
+
+# ==============================================================================
+# RADIO
+# ==============================================================================
+# Everything that talks to the Crazyradio dongle: claiming it, arming, and
+# turning a failed claim into a sentence that says which of the six usual
+# causes it was. radio_doctor.py is the standalone version of that diagnosis.
 
 # ==============================================================================
 # KEYBOARD BACKENDS
@@ -1368,8 +1390,13 @@ class Teleop:
 
 
 # ==============================================================================
-# FRAME VERIFICATION MODE (no radio, no motors)
+# BENCH AND VERIFICATION MODES
 # ==============================================================================
+# Three ways to answer "is the frame contract right?" without flying, in
+# increasing order of how much they can hurt you. None of them is the flight
+# loop; skip to MAIN if that is what you came for.
+
+# --- --check: frame verification (no radio, no motors) ------------------------
 
 def run_check(args):
     print(__doc__.split("CONTROLS")[0])
@@ -1407,9 +1434,7 @@ def run_check(args):
 
 
 
-# ==============================================================================
-# BENCH FRAME TEST (no radio, no motors, props can stay off)
-# ==============================================================================
+# --- --frame-test: yaw and origin offsets (no radio, no motors) ---------------
 
 def run_frame_test(args):
     """
@@ -1536,6 +1561,8 @@ def run_frame_test(args):
     return 0
 
 
+
+# --- --motor-test: closed-loop sign test, PROPS OFF ---------------------------
 
 def run_motor_test(args):
     """
@@ -1683,6 +1710,9 @@ def run_motor_test(args):
 # ==============================================================================
 # MAIN
 # ==============================================================================
+# selfcheck() runs on every start. It parses this file and asserts the
+# structural invariants the tests cannot reach from outside -- that is why it
+# lives here rather than in tests/.
 
 def selfcheck() -> None:
     """

@@ -34,7 +34,7 @@ import sys
 import time
 
 # Thresholds. Each is a number this rig has actually been measured at, with
-# margin -- not a guess. See FINDINGS_2026-09-07.md.
+# margin -- not a guess. See docs/FINDINGS_2026-09-07.md.
 RTO_MAX_MS = 50.0        # measured 20 with the route, 202 without
 RATE_MIN_HZ = 200.0      # 240 published, ~235 seen by a python subscriber
 GAP_MAX_MS = 60.0        # 240 Hz is 4.2 ms; 17 ms holes are the RTO floor
@@ -194,8 +194,8 @@ def main():
         if med < 1.0:
             print("       note: a median under 1 ms means the bridge is "
                   "stamping PULL time,\n"
-                  "       not capture time -- rebuild it with "
-                  "patch_bridge_latency.py.")
+                  "       not capture time -- your image predates the "
+                  "capture-time fix; rebuild it.")
 
         worst = max((att_change_deg(quats[i], quats[i - 1])
                      for i in range(1, len(quats))), default=0.0)
@@ -207,7 +207,7 @@ def main():
     # -- 3. the markers ---------------------------------------------------
     if not qtype:
         check("marker completeness", False,
-              "%s not published -- the image predates patch_track_quality.py"
+              "%s not published -- rebuild the image"
               % qtopic)
     elif not seen:
         check("marker completeness", False, "no samples on %s" % qtopic)

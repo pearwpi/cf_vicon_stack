@@ -125,8 +125,8 @@ COPY . ${CFV_ROOT}/
 # the guards without hardware. A student image is therefore never one that failed
 # its own tests.
 RUN cd ${CFV_ROOT} \
-    && for t in test_frame_check.py test_tilt_origin_check.py \
-                test_flip_guard.py test_crazyflie_ros.py; do \
+    && for t in tests/test_frame_check.py tests/test_tilt_origin_check.py \
+                tests/test_flip_guard.py tests/test_crazyflie_ros.py; do \
          echo "--- $t"; \
          python3 "$t" > /tmp/out 2>&1 \
            || { tail -30 /tmp/out; echo "*** $t FAILED -- aborting build"; exit 1; }; \

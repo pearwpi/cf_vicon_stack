@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP = {".git", "build", "install", "log", "__pycache__", ".cache", "cache"}
 SKIP_PREFIXES = ("_backup", "_to_delete", "_old", ".venv", "venv")
 

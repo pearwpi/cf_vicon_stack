@@ -30,7 +30,7 @@ import shutil
 import sys
 
 MANIFEST = "DUPLICATES.json"
-TESTFILE = "test_duplicates.py"
+TESTFILE = os.path.join("tests", "test_duplicates.py")
 SKIP_DIRS = {".git", "build", "install", "log", "__pycache__", ".cache", "cache"}
 # Directories that legitimately hold OLD copies of tracked files. They must
 # never be treated as duplicates-that-must-match: they are rollback snapshots,
@@ -103,7 +103,8 @@ import hashlib
 import json
 import os
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# this file lives in tests/; the tree it guards is the repository root
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP = {".git", "build", "install", "log", "__pycache__", ".cache", "cache"}
 SKIP_PREFIXES = ("_backup", "_to_delete", "_old", ".venv", "venv")
 
@@ -248,7 +249,9 @@ def main():
                    "groups": [{"canonical": k, "copies": sorted(v)}
                               for k, v in sorted(real.items())]}, fh, indent=2)
         fh.write("\n")
-    with open(os.path.join(root, TESTFILE), "w") as fh:
+    tpath = os.path.join(root, TESTFILE)
+    os.makedirs(os.path.dirname(tpath), exist_ok=True)
+    with open(tpath, "w") as fh:
         fh.write(TEST_SRC)
     print("\n  wrote %s and %s" % (MANIFEST, TESTFILE))
     print("  %d file(s) converted. Now run:  python3 -m pytest %s -q" % (changed, TESTFILE))

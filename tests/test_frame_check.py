@@ -7,10 +7,16 @@ sends you to change the Vicon world calibration when the real fault was a
 recovered value is checked against ground truth.
 """
 import math
+import os
 import random
 import sys
 
-import frame_check as F
+# The suites live in tests/ but import the modules under test from the
+# repository root, so the root has to be on sys.path however this file
+# is invoked -- "python3 tests/x.py", "python3 -m tests.x" or pytest.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import frame_check as F  # noqa: E402
 
 fails = []
 

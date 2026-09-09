@@ -10,8 +10,8 @@ _to_delete/
 *.tlog.raw
 *.parm
 # Run data is not source. Two exceptions: the replay fixture the test suite
-# needs, and anything filed under evidence/ as the record behind a finding.
+# needs, and anything filed under docs/evidence/ as the record behind a
+# finding.
 *.csv
-!tilt_capture_1786563877.csv
-!evidence/
-!evidence/**
+!tests/fixtures/*.csv
+!docs/evidence/**

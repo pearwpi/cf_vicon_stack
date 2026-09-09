@@ -57,7 +57,10 @@ for name in ("cflib", "cflib.crtp", "cflib.crazyflie", "cflib.crazyflie.log",
     sys.modules.setdefault(name, types.ModuleType(name))
 sys.modules["geometry_msgs.msg"].PoseStamped = object
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The suites live in tests/ but import the modules under test from the
+# repository root, so the root has to be on sys.path however this file
+# is invoked -- "python3 tests/x.py", "python3 -m tests.x" or pytest.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import crazyflie_vicon_teleop as T  # noqa: E402
 
 PASS = FAIL = 0

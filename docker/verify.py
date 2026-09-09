@@ -144,8 +144,9 @@ elif MODE == "context":
                   for q in pos)
         return hit and not any(fnmatch.fnmatch(path, n) for n in neg)
 
-    for need in ("tilt_capture_1786563877.csv", "cf_core.py", "cf_keyboard.py",
-                 "crazyflie_vicon_teleop.py", "test_crazyflie_ros.py",
+    for need in ("tests/fixtures/tilt_capture_1786563877.csv", "cf_core.py",
+                 "cf_keyboard.py", "crazyflie_vicon_teleop.py",
+                 "tests/test_crazyflie_ros.py",
                  "docker/verify.py", "docker/entrypoint.sh"):
         chk(f"survives .dockerignore: {need}", not excluded(need))
 

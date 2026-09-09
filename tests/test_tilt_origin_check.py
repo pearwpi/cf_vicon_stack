@@ -25,7 +25,10 @@ import sys
 import contextlib
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The suites live in tests/ but import the modules under test from the
+# repository root, so the root has to be on sys.path however this file
+# is invoked -- "python3 tests/x.py", "python3 -m tests.x" or pytest.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tilt_origin_check as TOC
 
 PASS = FAIL = 0
@@ -476,7 +479,7 @@ check("verdict marked unreliable", info["verdict"].startswith("UNRELIABLE_"),
 print("\n[V] the real 2026-08-12 capture, replayed end to end")
 import os
 CAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "tilt_capture_1786563877.csv")
+                   "fixtures", "tilt_capture_1786563877.csv")
 if os.path.exists(CAP):
     import csv as _csv
     rr = []
