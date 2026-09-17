@@ -77,6 +77,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
@@ -149,7 +150,11 @@ class CrazyflieServer(Node):
         self.yaw_offset = float(d("yaw_offset", 0.0).value)
         vol = list(d("volume", list(C.DEFAULT_VOLUME)).value)
         self.volume = (float(vol[0]), float(vol[1]), float(vol[2]))
-        bounds_p = list(d("bounds", []).value or [])
+        # Declared by TYPE, not by an empty-list default. rclpy infers the
+        # type of [] as BYTE_ARRAY, so a YAML file supplying six floats is
+        # rejected at startup with "expecting type BYTE_ARRAY" -- the node
+        # dies before it ever reads the geofence it was handed.
+        bounds_p = list(d("bounds", Parameter.Type.DOUBLE_ARRAY).value or [])
 
         # ---- mocap state (written by the executor thread, read by others) ----
         self._pose_lock = threading.Lock()
