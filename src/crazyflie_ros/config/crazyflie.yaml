@@ -27,9 +27,18 @@
     no_fly: false             # true = connect and inject, never spin a motor
 
     hover_z: 0.60
-    volume: [2.0, 2.0, 1.20]  # width(x), depth(y), ceiling(z); auto-centred on
-                              # the drone's position at startup
-    # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]   # overrides `volume` if set
+    # volume: [2.0, 2.0, 1.20]   # width(x), depth(y), ceiling(z); auto-centred
+                                 # on the drone's position at startup. Only
+                                 # sane in a small, symmetric space.
+    # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]  -- absolute, Vicon frame.
+    # These are the PEAR volume and they MUST match the boundary line in the
+    # scene map (scenes/net_2026-09-16/net_2026-09-16.txt), which explains how
+    # each number was chosen. Short version: y and z come from what Vicon
+    # tracks, pulled in far enough that a geofence KILL -- 0.80 m past the soft
+    # bound -- still happens inside tracked space. x is tighter than tracking
+    # allows because the splat has no floor beyond it.
+    # Measure your own room; do not inherit these.
+    bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
 
 /crazyflie_teleop:
   ros__parameters:

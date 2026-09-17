@@ -223,6 +223,31 @@ network problem, and it will reach the drone as pose holes.
 
 ## 3.4 Your first flight
 
+**First, make the geofence match your room.** `crazyflie.yaml` ships
+`volume: [2.0, 2.0, 1.20]`, auto-centred on wherever the drone happens to be at
+startup. That is a 2 m box, and most rooms are not 2 m. Set six absolute
+numbers in Vicon coordinates instead:
+
+```yaml
+    # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]
+    bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
+```
+
+Those are the PEAR values; measure your own. Find the volume Vicon actually
+tracks, then pull the bound in far enough that a geofence **kill** -- which
+fires 0.80 m past the soft bound -- still happens inside tracked space. Outside
+tracking there is no pose at all: the onboard filter dead-reckons on IMU and
+drift is metres per second.
+
+Then pull it in again wherever the **splat** has no floor. A distance field
+built from a hole reads as free space, so a planner routes through it, the
+altitude clamp refuses to follow, and nothing reports why. The scene's map file
+records which of the two constraints set each number.
+
+Then check `max_altitude_m` in `splat_hitl`'s `Limits`. It is a separate layer
+in a separate repository, and it caps the commanded altitude regardless of what
+the geofence allows. A drone that simply stops climbing, with no error, is this.
+
 Keyboard teleop, in the net, with one hand on the kill:
 
 ```bash
