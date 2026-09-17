@@ -74,6 +74,7 @@ If you want a sane interface, put a converter node in front of this one. Do not
 import math
 import threading
 import time
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -175,6 +176,10 @@ class CrazyflieServer(Node):
         self._est = None               # (x, y, z) onboard estimate
         self._vbat = 0.0
         self._got_state = False
+        self._kvar = None              # (varPX, varPY, varPZ) from the EKF
+        self._est_ready = False        # reset done AND settled onto Vicon
+        self._est_thread = None
+        self._logs = []                # LogConfigs to stop on the way out
 
         # ---- command state (written by executor, read by executor) -----------
         self._cmd = None               # ("position"|"hover"|"velocity_world"|"full_state", payload)
@@ -346,6 +351,7 @@ class CrazyflieServer(Node):
             return False
         self.cf = self.scf.cf
         self.get_logger().info("connected")
+        self._configure_estimator()
 
         # Onboard estimate + battery. These land on cflib's RX thread, NOT on
         # the ROS executor, hence _tlm_lock.
@@ -357,8 +363,22 @@ class CrazyflieServer(Node):
         try:
             self.cf.log.add_config(lg)
             lg.start()
+            self._logs.append(lg)
         except Exception as exc:
             self.get_logger().warn(f"telemetry log failed to start: {exc}")
+
+        # Kalman position variance. This is how we learn the estimator has
+        # actually settled, instead of assuming it because time passed.
+        lgv = LogConfig(name="kvar", period_in_ms=100)
+        for v in ("kalman.varPX", "kalman.varPY", "kalman.varPZ"):
+            lgv.add_variable(v, "float")
+        lgv.data_received_cb.add_callback(self._on_kvar)
+        try:
+            self.cf.log.add_config(lgv)
+            lgv.start()
+            self._logs.append(lgv)
+        except Exception as exc:
+            self.get_logger().warn(f"kalman variance log failed to start: {exc}")
 
         self._start_extpose()
         return True
@@ -370,6 +390,98 @@ class CrazyflieServer(Node):
                          data.get("stateEstimate.z", 0.0))
             self._vbat = data.get("pm.vbat", self._vbat)
             self._got_state = True
+
+    def _on_kvar(self, ts, data, cfg):
+        with self._tlm_lock:
+            self._kvar = (data.get("kalman.varPX", 0.0),
+                          data.get("kalman.varPY", 0.0),
+                          data.get("kalman.varPZ", 0.0))
+
+    def _configure_estimator(self):
+        """Put the firmware into the only state where injected pose means anything.
+
+        The complementary estimator cannot consume an absolute position. With it
+        selected, stateEstimate.x/y sit at exactly 0 and z reports barometric
+        altitude ABOVE SEA LEVEL -- on 2026-09-17 this node published
+        (0, 0, 139.5) for a drone on the floor and every extpose packet we had
+        sent was discarded. The position controller would then have flown on a
+        state with no relationship to the room.
+
+        The standalone teleop has always set these. The ROS split did not.
+        """
+        p = self.cf.param
+        p.set_value("stabilizer.estimator", "2")    # Kalman. Mocap requires it.
+        p.set_value("stabilizer.controller", "1")   # PID, not Mellinger: far
+                                                    # more forgiving of a pose
+                                                    # stream that drops frames.
+        p.set_value("commander.enHighLevel", "0")
+        # What the EKF assumes about our pose noise. Too small and one bad frame
+        # yanks the estimate; too large and it ignores mocap and drifts on IMU.
+        for name, val in (("locSrv.extPosStdDev", "0.01"),
+                          ("locSrv.extQuatStdDev", "0.06")):
+            try:
+                p.set_value(name, val)
+            except Exception as exc:
+                self.get_logger().warn(f"could not set {name}: {exc}")
+        time.sleep(0.3)
+        self.get_logger().info("estimator=kalman controller=pid "
+                               "extPosStdDev=0.01 extQuatStdDev=0.06")
+
+    def _start_estimator_reset(self):
+        """Reset the EKF once pose is really flowing, then wait for it to settle.
+
+        Order matters. resetEstimation initialises the filter at the ORIGIN, so
+        it has to happen while extpose is being injected -- reset it on a silent
+        link and the filter converges confidently onto (0, 0, 0), and the first
+        setpoint flies the drone there.
+
+        Settled is not the same as correct: a filter can be beautifully
+        converged onto the wrong place. So this checks the variance has stopped
+        moving AND that the result agrees with Vicon before saying ready.
+        """
+        def run():
+            self.get_logger().info("resetting Kalman estimator ...")
+            try:
+                self.cf.param.set_value("kalman.resetEstimation", "1")
+                time.sleep(0.15)
+                self.cf.param.set_value("kalman.resetEstimation", "0")
+            except Exception as exc:
+                self.get_logger().error(f"estimator reset failed: {exc}")
+                return
+            hist = deque(maxlen=C.KALMAN_CONVERGE_WINDOW)
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                time.sleep(0.1)
+                with self._tlm_lock:
+                    kv, est = self._kvar, self._est
+                if kv is None:
+                    continue
+                hist.append(kv)
+                if len(hist) < hist.maxlen:
+                    continue
+                spread = max(max(h[i] for h in hist) - min(h[i] for h in hist)
+                             for i in range(3))
+                if spread >= C.KALMAN_VAR_THRESHOLD:
+                    continue
+                pose = self.latest()
+                if pose is None or est is None:
+                    continue
+                err = math.dist(est, (pose.x, pose.y, pose.z))
+                if err > C.EKF_DIVERGE_M:
+                    self.get_logger().error(
+                        f"estimator settled {err * 100:.0f} cm from Vicon -- it "
+                        "converged onto the wrong place. NOT ready to fly.")
+                    return
+                self._est_ready = True
+                self.get_logger().info(
+                    f"estimator converged (EKF-Vicon error {err * 100:.1f} cm)")
+                return
+            self.get_logger().error(
+                "estimator did not converge in 12 s -- takeoff will be refused")
+
+        self._est_thread = threading.Thread(target=run, daemon=True,
+                                            name="estreset")
+        self._est_thread.start()
 
     def _start_extpose(self):
         """Push mocap into the EKF on its own thread, independent of control.
@@ -467,6 +579,12 @@ class CrazyflieServer(Node):
 
         if self.cf is None:
             return
+
+        # Reset the EKF once, after extpose has actually been going out for a
+        # second. Earlier than that and it resets onto an empty link.
+        if (not self._est_ready and self._est_thread is None
+                and self._sent_extpose > int(self.extpose_hz)):
+            self._start_estimator_reset()
 
         flying = self.state in C.State.FLYING_STATES
 
@@ -599,6 +717,12 @@ class CrazyflieServer(Node):
             return False
         if self.bounds is None:
             self.bounds = C.Bounds.centered_on(p.x, p.y, *self.volume)
+
+        if not self._est_ready:
+            self.get_logger().error(
+                "takeoff refused: the Kalman estimator has not converged onto "
+                "Vicon. Wait for the 'estimator converged' line.")
+            return False
 
         ok, reasons = C.prearm_check(p, self.bounds, pos_only=self.pos_only)
         if not ok:
@@ -747,6 +871,15 @@ class CrazyflieServer(Node):
         self._extpose_stop.set()
         if self._extpose_thread:
             self._extpose_thread.join(timeout=1.0)
+        for lg in self._logs:
+            # An unstopped block keeps streaming from the firmware after we are
+            # gone. The next connection then sees "no LogEntry to handle id=N"
+            # and can lose the link outright, which cost us 20 minutes on
+            # 2026-09-17.
+            try:
+                lg.stop()
+            except Exception:
+                pass
         if self.cf is not None:
             try:
                 self.stop_motors()
