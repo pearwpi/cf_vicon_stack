@@ -724,6 +724,17 @@ class CrazyflieServer(Node):
                 "Vicon. Wait for the 'estimator converged' line.")
             return False
 
+        # An ambiguous rigid body can be mid-flip on exactly the frame we latch
+        # the climb's yaw target from. supervise() would catch a SUSTAINED
+        # rejection later, but by then we would already be rotating toward a
+        # heading 90 deg from the one the drone is actually holding.
+        if not self.pos_only and self.quat_age() > C.QUAT_DEAD_S:
+            self.get_logger().error(
+                f"takeoff refused: no usable mocap orientation for "
+                f"{self.quat_age() * 1000:.0f} ms ({self._yaw_rejects} yaw "
+                f"rejects) -- the rigid body is ambiguous right now")
+            return False
+
         ok, reasons = C.prearm_check(p, self.bounds, pos_only=self.pos_only)
         if not ok:
             self.get_logger().error("TAKEOFF REFUSED:")
@@ -734,7 +745,10 @@ class CrazyflieServer(Node):
         if not self._armed:
             _arm(self.cf, True)
             self._armed = True
-        self._takeoff_target = (p.x, p.y, float(height), p.yaw_deg)
+        # Last ACCEPTED yaw, not this frame's. p.yaw_deg carries whatever
+        # Tracker last said, including a solution we rejected.
+        yaw0 = self._last_yaw if self._last_yaw is not None else p.yaw_deg
+        self._takeoff_target = (p.x, p.y, float(height), yaw0)
         self._climb_z = p.z
         self._hold = None
         self.state = C.State.TAKEOFF
