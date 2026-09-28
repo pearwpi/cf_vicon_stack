@@ -32,7 +32,7 @@
                                  # sane in a small, symmetric space.
     # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]  -- absolute, Vicon frame.
     # These are the PEAR volume. The scene map
-    # (scenes/net_2026-09-16/net_2026-09-16.txt) explains how each number was
+    # (scenes/a2_train/a2_train.txt) explains how each number was
     # chosen: y and z from what Vicon tracks, pulled in far enough that a
     # geofence KILL -- 0.80 m past the soft bound -- still lands inside tracked
     # space; x tighter still, because the splat has no floor beyond it.
