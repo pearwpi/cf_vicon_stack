@@ -99,19 +99,24 @@ decoration, and none of them should be raised to make an experiment work.
 
 ## 2.2 Teaching the object in Tracker
 
-Your drone needs markers, and Tracker needs to be taught what they mean.
-Marker placement is your problem to solve — the short version is that the
-constellation must be **asymmetric** and **not flat**, because a symmetric or
-planar arrangement gives the solver two equally good answers and it will pick
-between them at random, mid-flight. `marker_geom.py` in this repo will tell
-you whether yours is a problem before you spend a battery finding out:
+**Your drone comes with its markers attached and its object already created in
+Vicon Tracker. Do not move, add or remove markers** — the object was built from
+their exact positions. If a marker comes off or tracking misbehaves, tell the
+TA. The rest of this section is how an object is created, kept for reference.
+
+Marker placement matters: the constellation must be **asymmetric** and **not
+flat**, because a symmetric or planar arrangement gives the solver two equally
+good answers and it will pick between them at random, mid-flight.
+`marker_geom.py` in this repo will tell you whether a layout is a problem
+before you spend a battery finding out:
 
 ```bash
 python3 marker_geom.py --vsk /path/to/your_object.vsk --sweep
 ```
 
-To create the object (Tracker 3.x; check your version's help if the panes have
-moved):
+To create the object (the lab runs Tracker 4.1 — see the
+[Tracker 4.1 user guide](https://help.vicon.com/space/Tracker41/14320562/Vicon+Tracker+User+Guide)
+if the panes have moved):
 
 1. Put the drone in the middle of the volume, **level**, on a flat surface.
    Tracker builds the object's axes from the pose it sees at this moment, and
@@ -166,51 +171,67 @@ python3 radio_doctor.py
 It diagnoses the USB claim, which is the usual cause — the dongle can only be
 held by one process, so a stray `cfclient` will lock everyone else out.
 
-The default URI is `radio://0/80/2M/E7E7E7E7E7`. In `cfclient`, press **Scan**
-rather than typing it: if two teams are on the same channel and address you
-will find that out here rather than in the air.
+Your drone's URI is on its label. Always pass it: every script's default URI
+(`radio://0/80/2M/E7E7E7E701`) is probably another team's drone. The scripts
+take it as `--uri`; the ROS driver reads it from your copy of
+`crazyflie.yaml` (§3.3).
 
 ## 3.2 Docker, and the one setting that matters
 
 Everything runs in a container so that your machine and the lab machine agree.
 
+Clone this repository and `splat_hitl` side by side in one course folder —
+the container shows that folder at `/course`. Then, once per machine, with the
+Crazyradio plugged in, run the host setup as yourself (not with `sudo`) and log
+out and back in:
+
 ```bash
-export USER_UID=$(id -u) USER_GID=$(id -g) \
-       PLUGDEV_GID=$(getent group plugdev | cut -d: -f3)
+./docker/host-setup.sh
+```
+
+It installs the udev rules, adds you to `plugdev` and `docker`, and writes your
+build arguments to `docker/.env`, so no exports are needed. Then build, and
+start the container with your team's number:
+
+```bash
 docker compose -f docker/docker-compose.yml build
-docker compose -f docker/docker-compose.yml run --rm cf
+ROS_DOMAIN_ID=7 docker compose -f docker/docker-compose.yml run --rm cf
 ```
 
 The image runs the full test suite while it builds, so an image that exists is
 an image that passed its own tests.
 
-**Set `ROS_DOMAIN_ID` to your team's number, and never to zero.**
-
-```bash
-ROS_DOMAIN_ID=7 docker compose -f docker/docker-compose.yml run --rm cf
-```
-
-Every team on domain 0 sees every other team's topics **and setpoints**. That
-is not a tidiness issue. It means your drone can be commanded by someone
-else's code. Safe values on Linux are 0–101 and 215–232; take the number you
-are assigned.
+**Set `ROS_DOMAIN_ID` to your team's number, and never to zero.** Every team on
+domain 0 sees every other team's topics **and setpoints**. That is not a
+tidiness issue. It means your drone can be commanded by someone else's code.
+Use your assigned number, 1–101, and check it in the first line the container
+prints. Every terminal needs its own container, started the same way.
 
 If topics do not appear, the first thing to check is that the domain matches
 between your bridge and your node. It is silent when it is wrong.
 
 ## 3.3 The bridge and the driver
 
+First make your own copy of the driver config and set `uri` and
+`vicon_topic` in it from your drone's label:
+
+```bash
+cp /ws/src/crazyflie_ros/config/crazyflie.yaml /course/my_drone.yaml
+```
+
 ```bash
 # terminal 1 — Vicon into ROS
 ros2 launch vicon_receiver client.launch.py
 
 # terminal 2 — the radio and every safety guard
-ros2 launch crazyflie_ros crazyflie.launch.py no_fly:=true
+ros2 launch crazyflie_ros crazyflie.launch.py \
+    config:=/course/my_drone.yaml vicon:=false teleop:=false no_fly:=true
 ```
 
-`no_fly:=true` runs the whole stack with the motors inhibited. Use it the
-first time, every time you change something structural, and any time you are
-not certain.
+`vicon:=false` because terminal 1 already runs the bridge; the launch file
+starts its own otherwise. `no_fly:=true` runs the whole stack with the motors
+inhibited. Use it the first time, every time you change something structural,
+and any time you are not certain.
 
 The bridge prints a line like this every few seconds:
 
@@ -223,17 +244,15 @@ network problem, and it will reach the drone as pose holes.
 
 ## 3.4 Your first flight
 
-**First, make the geofence match your room.** `crazyflie.yaml` ships
-`volume: [2.0, 2.0, 1.20]`, auto-centred on wherever the drone happens to be at
-startup. That is a 2 m box, and most rooms are not 2 m. Set six absolute
-numbers in Vicon coordinates instead:
+**The geofence.** `crazyflie.yaml` ships six absolute numbers in Vicon
+coordinates for the lab's flight volume:
 
 ```yaml
     # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]
     bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
 ```
 
-Those are the PEAR values; measure your own. Find the volume Vicon actually
+Leave them as they are in the lab. To fly anywhere else, measure your own. Find the volume Vicon actually
 tracks, then pull the bound in far enough that a geofence **kill** -- which
 fires 0.80 m past the soft bound -- still happens inside tracked space. Outside
 tracking there is no pose at all: the onboard filter dead-reckons on IMU and
@@ -248,10 +267,17 @@ Then check `max_altitude_m` in `splat_hitl`'s `Limits`. It is a separate layer
 in a separate repository, and it caps the commanded altitude regardless of what
 the geofence allows. A drone that simply stops climbing, with no error, is this.
 
-Keyboard teleop, in the net, with one hand on the kill:
+The first hover uses the standalone script, which talks to the radio itself —
+so stop the driver from §3.3 first (Ctrl-C). Only one program can hold the
+Crazyradio. Connect once with the motors locked off, wait for
+`estimator converged`, then fly in a small box, in the net, with one hand on
+the kill:
 
 ```bash
-python3 crazyflie_vicon_teleop.py --help
+python3 crazyflie_vicon_teleop.py --uri <your URI> \
+    --topic /vicon/<object>/<object> --no-fly
+python3 crazyflie_vicon_teleop.py --uri <your URI> \
+    --topic /vicon/<object>/<object> --hover-z 0.6 --volume 1.5 1.5 0.8
 ```
 
 Take off, hover for thirty seconds, land. Do not skip this because the
@@ -317,4 +343,4 @@ Bring these, and most problems are diagnosed in a minute:
 **Sources for the hardware figures:**
 [Crazyflie 2.1+ product page](https://www.bitcraze.io/products/crazyflie-2-1-plus/) ·
 [Getting started with the Crazyflie 2.x](https://www.bitcraze.io/documentation/tutorials/getting-started-with-crazyflie-2-x/) ·
-[Vicon Tracker documentation](https://help.vicon.com/space/Tracker39/14060303/Creating+an+object)
+[Vicon Tracker 4.1 user guide](https://help.vicon.com/space/Tracker41/14320562/Vicon+Tracker+User+Guide)

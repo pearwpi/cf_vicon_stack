@@ -15,12 +15,14 @@ machine.
 
 ## One-time host setup
 
-On the Linux machine with the Crazyradio plugged in:
+On the Linux machine with the Crazyradio plugged in, as yourself (not with
+`sudo` — it asks when it needs to):
 
     ./docker/host-setup.sh
 
-It installs `/etc/udev/rules.d/99-bitcraze.rules`, puts you in `plugdev`, shows
-what `lsusb` actually sees, and prints the three build args for your machine.
+It installs `/etc/udev/rules.d/99-bitcraze.rules`, puts you in `plugdev` and
+`docker`, shows what `lsusb` actually sees, and writes the three build args for
+your machine to `docker/.env`, where compose picks them up with no exports.
 **Log out and back in afterwards** or the group change will not apply.
 
 udev rules must live on the host. udev is a host daemon reachable only over a
@@ -29,22 +31,24 @@ the container sees on `/dev/bus/usb/...` is exactly what host udev stamped there
 
 ## Build and run
 
-    export USER_UID=$(id -u) USER_GID=$(id -g) \
-           PLUGDEV_GID=$(getent group plugdev | cut -d: -f3)
-
     docker compose -f docker/docker-compose.yml build
-    docker compose -f docker/docker-compose.yml run --rm cf
+    ROS_DOMAIN_ID=7 docker compose -f docker/docker-compose.yml run --rm cf
 
-The `USER_UID`/`USER_GID` args matter: they make the container user match you,
+Use your team's number for `ROS_DOMAIN_ID` — see below. Every terminal needs its
+own container, started the same way.
+
+The `USER_UID`/`USER_GID` args (from `docker/.env`) matter: they make the container user match you,
 so files you create in the bind-mounted workspace are yours and not root's.
 `PLUGDEV_GID` must match your host's `plugdev` group *numerically* — group names
 mean nothing across the boundary, the kernel checks the number, and `plugdev` is
 not a Debian-reserved GID so it varies per machine.
 
-Inside:
+Inside, with your drone's `uri` and `vicon_topic` set in a copy of the config
+(`cp /ws/src/crazyflie_ros/config/crazyflie.yaml /course/my_drone.yaml`):
 
-    ros2 launch crazyflie_ros crazyflie.launch.py no_fly:=true
-    python3 vicon_probe.py --live
+    ros2 launch crazyflie_ros crazyflie.launch.py \
+        config:=/course/my_drone.yaml teleop:=false no_fly:=true
+    VICON_TOPIC=/vicon/<object>/<object> python3 vicon_probe.py --live
 
 ## Multi-arch (Jetson Orin Nano)
 
@@ -76,6 +80,7 @@ the ephemeral port range on Linux.
 | `ipc: host`, `shm_size: 512m` | Only needed if you re-enable shared-memory DDS. Docker's default `/dev/shm` is 64 MB. |
 | `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` | Fast DDS shared memory is unreliable across the container boundary and produces `Failed to create segment ... Permission denied` noise, especially with a root container and a non-root host process. It is not needed to reach the Vicon PC. Predictability beats throughput in a teaching image. |
 | `stdin_open` + `tty` | The keyboard teleop puts the terminal into raw mode. |
+| `- ../..:/course` and `PYTHONPATH=/course/splat_hitl` | The course folder, where this repository and `splat_hitl` are cloned side by side, so `splat_hitl`, the starter packs and a student's own code are all visible — and `splat_hitl` imports without a pip install. |
 
 ## Building your own layer
 

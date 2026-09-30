@@ -1,8 +1,6 @@
-# docker compose -f docker/docker-compose.yml build
-# docker compose -f docker/docker-compose.yml run --rm cf
-#
-# Run docker/host-setup.sh first, then:
-#   export USER_UID=$(id -u) USER_GID=$(id -g) PLUGDEV_GID=$(getent group plugdev | cut -d: -f3)
+# Run docker/host-setup.sh once first (it writes docker/.env, so no exports), then:
+#   docker compose -f docker/docker-compose.yml build
+#   ROS_DOMAIN_ID=<team number> docker compose -f docker/docker-compose.yml run --rm cf
 
 services:
   cf:
@@ -41,6 +39,10 @@ services:
       # Must be unset or 0, or the container cannot see the Vicon PC at all.
       ROS_LOCALHOST_ONLY: "0"
       FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+      # splat_hitl, cloned next to this repository in the course folder, so it
+      # imports inside the container without a pip install. The entrypoint
+      # prepends the built stack to this.
+      PYTHONPATH: "/course/splat_hitl"
 
     volumes:
       # A LIVE view of the host's USB tree, deliberately not `devices:`.
@@ -55,6 +57,10 @@ services:
       # regardless of what is mounted here. Edit a .py under /ws and rerun it
       # directly; edit anything under src/ and rebuild the image.
       - ../:/ws:rw
+      # The COURSE FOLDER -- the parent of this repository -- at /course, so
+      # splat_hitl, the starter packs and your own code are all visible here.
+      # Clone cf_vicon_stack and splat_hitl side by side in one folder.
+      - ../..:/course:rw
 
     # Permission for the whole USB char major (189), so hot-plugged nodes are
     # usable too. This is the piece that lets us avoid `privileged: true`.
