@@ -2,7 +2,9 @@
 """The safety and control core, shared by both front ends.
 
 Imported by crazyflie_vicon_teleop.py (standalone) AND by
-src/crazyflie_ros/crazyflie_ros/crazyflie_server.py (ROS 2 driver, via symlink).
+src/crazyflie_ros/crazyflie_ros/crazyflie_server.py (the ROS 2 driver), which
+imports an identical copy kept in its package; tests/test_duplicates.py fails
+the moment the two differ.
 
 Two programs can spin these motors. A guard that exists in one and not the
 other is worse than no guard, because the two paths then behave differently
