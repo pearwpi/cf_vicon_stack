@@ -9,9 +9,6 @@ _to_delete/
 *.tlog
 *.tlog.raw
 *.parm
-# Run data is not source. Two exceptions: the replay fixture the test suite
-# needs, and anything filed under docs/evidence/ as the record behind a
-# finding.
+# Run data is not source, except the capture the tests replay.
 *.csv
 !tests/fixtures/*.csv
-!docs/evidence/**

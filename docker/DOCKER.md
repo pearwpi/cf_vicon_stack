@@ -1,7 +1,8 @@
 # Running cf_vicon_stack in Docker
 
-A base image with ROS 2 Humble, cflib and this whole stack already built. You
-build it once, then build your own image `FROM cfvicon:base`.
+An image with ROS 2 Humble, cflib and this whole stack built, tagged
+`cfvicon:base`. To add packages, such as PyTorch for a policy, build your own
+image on top of it: see "Building your own layer" below.
 
 ## Read this first: the radio needs a Linux host
 
@@ -50,10 +51,10 @@ Inside, with your drone's `uri` and `vicon_topic` set in a copy of the config
         config:=/course/my_drone.yaml teleop:=false no_fly:=true
     VICON_TOPIC=/vicon/<object>/<object> python3 vicon_probe.py --live
 
-## Multi-arch (Jetson Orin Nano)
+## Building for arm64
 
 `ros:humble-ros-base` publishes amd64 and arm64, and the vendored Vicon SDK
-carries both trees, so one Dockerfile covers laptops and the Jetson:
+carries both, so the same Dockerfile builds for both:
 
     docker buildx create --use --name cfvicon 2>/dev/null || docker buildx use cfvicon
     docker buildx build --platform linux/amd64,linux/arm64 \
@@ -97,14 +98,10 @@ See `example-student.Dockerfile`. Two rules:
 
 ## The build tests itself
 
-The image runs every check from the four suites during `docker build` and fails
-if any of them do, so a student image is never one that failed its own tests. It
-also verifies that the two copies of `cf_core.py` — the stack root and the ROS
-package — are byte-identical. They were symlinks once, and the guard checked
-that the link resolved; symlinks do not survive a transfer, so they are real
-files now and the guard checks content. The failure mode is unchanged: two
-silently diverging copies of the safety core is the one thing here that would be
-genuinely dangerous.
+`docker build` runs the four test scripts and stops if any fails, so an image
+that exists passed its own tests. It also checks that the two copies of
+`cf_core.py` and `cf_keyboard.py`, at the stack root and in the ROS package, are
+identical: two different copies of the safety core would be dangerous.
 
 ## Troubleshooting
 

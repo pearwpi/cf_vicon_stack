@@ -33,8 +33,7 @@ import subprocess
 import sys
 import time
 
-# Thresholds. Each is a number this rig has actually been measured at, with
-# margin -- not a guess. See docs/FINDINGS_2026-09-07.md.
+# Thresholds: each is what this rig measured (pear-2, 7 Sep 2026), with margin.
 RTO_MAX_MS = 50.0        # measured 20 with the route, 202 without
 RATE_MIN_HZ = 200.0      # 240 published, ~235 seen by a python subscriber
 GAP_MAX_MS = 60.0        # 240 Hz is 4.2 ms; 17 ms holes are the RTO floor
@@ -102,7 +101,7 @@ def main():
             check("tcp rto to %s" % a.peer, rto <= RTO_MAX_MS,
                   "rto:%.0f ms (limit %.0f)%s"
                   % (rto, RTO_MAX_MS,
-                     "  -- rto_min route missing; see FINDINGS 2026-09-07 §1"
+                     "  -- the network fix is missing: course site, Installation, step 5"
                      if rto > RTO_MAX_MS else ""))
 
     # -- 2. the stream ----------------------------------------------------
@@ -201,7 +200,7 @@ def main():
                      for i in range(1, len(quats))), default=0.0)
         check("no solver branch jumps", worst < BRANCH_DEG,
               "worst single-frame reorientation %.1f deg%s"
-              % (worst, "  -- template ambiguity, see FINDINGS §4"
+              % (worst, "  -- Vicon fits the markers two ways: tell the TA"
                  if worst >= BRANCH_DEG else ""))
 
     # -- 3. the markers ---------------------------------------------------

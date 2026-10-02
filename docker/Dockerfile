@@ -89,16 +89,12 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
 ENV CFV_ROOT=/opt/cfvicon
 WORKDIR ${CFV_ROOT}
 
-# cf_core.py and cf_keyboard.py FIRST. The ROS package contains relative symlinks
-# (crazyflie_ros/cf_core.py -> ../../../cf_core.py) that point out of src/, so if
-# src/ were copied first the symlinks would dangle and colcon would build a
-# package with no safety core in it.
+# The ROS package holds copies of cf_core.py and cf_keyboard.py. Fail fast if a
+# copy differs from the stack root's: two different safety cores is the one
+# failure here that would be genuinely dangerous.
 COPY cf_core.py cf_keyboard.py ${CFV_ROOT}/
 COPY src/ ${CFV_ROOT}/src/
 
-# Fail fast if the symlink does not resolve. A context built from a tarball that
-# flattened symlinks would give two silently diverging copies of the safety core,
-# which is the one failure mode here that is genuinely dangerous.
 RUN for f in cf_core.py cf_keyboard.py; do \
       test "$(sha256sum < ${CFV_ROOT}/$f)" \
          = "$(sha256sum < ${CFV_ROOT}/src/crazyflie_ros/crazyflie_ros/$f)" \
