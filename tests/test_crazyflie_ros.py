@@ -78,6 +78,13 @@ class _Param:
         self.value = v
 
 
+class _ParamType:
+    """Stands in for a member of rclpy.Parameter.Type."""
+
+    def __init__(self, name):
+        self.name = name
+
+
 class _FakeNode:
     """Enough of rclpy.node.Node that the real __init__ runs unmodified."""
 
@@ -88,8 +95,10 @@ class _FakeNode:
         self._params = {}
 
     def declare_parameter(self, name, default):
-        self._params[name] = default
-        return _Param(default)
+        # Declared by type (rclpy.Parameter.Type), the value is None until set.
+        value = None if isinstance(default, _ParamType) else default
+        self._params[name] = value
+        return _Param(value)
 
     def create_subscription(self, t, topic, cb, qos, callback_group=None):
         self.subs.append((t, topic, cb)); return types.SimpleNamespace()
@@ -144,7 +153,11 @@ qos_mod.ReliabilityPolicy = types.SimpleNamespace(BEST_EFFORT=1)
 qos_mod.HistoryPolicy = types.SimpleNamespace(KEEP_LAST=1)
 cbg_mod = types.ModuleType("rclpy.callback_groups")
 cbg_mod.MutuallyExclusiveCallbackGroup = lambda: None
+param_mod = types.ModuleType("rclpy.parameter")
+param_mod.Parameter = type("Parameter", (), {
+    "Type": types.SimpleNamespace(DOUBLE_ARRAY=_ParamType("DOUBLE_ARRAY"))})
 rclpy.node, rclpy.qos, rclpy.callback_groups = node_mod, qos_mod, cbg_mod
+rclpy.parameter = param_mod
 
 gm = types.ModuleType("geometry_msgs"); gmm = types.ModuleType("geometry_msgs.msg")
 gmm.PoseStamped = _msg_class({"header": _hdr, "pose": _pose})
@@ -173,7 +186,7 @@ for _n in ("Takeoff", "Land", "GoTo", "NotifySetpointsStop", "Arm", "Stop"):
     setattr(cis, _n, type(_n, (), {"Request": type("R", (), {})}))
 
 for _k, _v in {"rclpy": rclpy, "rclpy.node": node_mod, "rclpy.qos": qos_mod,
-               "rclpy.callback_groups": cbg_mod,
+               "rclpy.callback_groups": cbg_mod, "rclpy.parameter": param_mod,
                "geometry_msgs": gm, "geometry_msgs.msg": gmm,
                "std_srvs": ss, "std_srvs.srv": ssv,
                "crazyflie_interfaces": ci, "crazyflie_interfaces.msg": cim,
