@@ -104,10 +104,10 @@ def test_non_finite_rejected():
 
 
 def test_pwm_override():
-    ok, _, sp, c = R.to_setpoint(0, 0, 0, 99.0, 40000)
+    ok, _, sp, c = R.to_setpoint(0, 0, 0, 99.0, 40000, allow_pwm=True)
     assert ok and sp[3] == 40000 and not c
-    assert R.to_setpoint(0, 0, 0, 0, 65000)[2][3] == HI
-    assert R.to_setpoint(0, 0, 0, 0, 5)[2][3] == LO
+    assert R.to_setpoint(0, 0, 0, 0, 65000, allow_pwm=True)[2][3] == HI
+    assert R.to_setpoint(0, 0, 0, 0, 5, allow_pwm=True)[2][3] == LO
 
 
 # --- gating -------------------------------------------------------------------
@@ -199,6 +199,34 @@ def test_decoder_config_requires_all_params_read_as_zero():
 def test_flightmode_defaults_cover_every_checked_param():
     assert set(R.FLIGHTMODE_DEFAULT) == set(R.FLIGHTMODE_CHECK)
     assert R.FLIGHTMODE_DEFAULT["flightmode.stabModeYaw"] == R.RATE
+
+
+def test_zero_and_negative_thrust_rejected():
+    for t in (0.0, -0.1, -5.0):
+        ok, why, sp, _ = R.to_setpoint(0, 0, 0, t)
+        assert not ok and sp is None and why
+    assert R.to_setpoint(0, 0, 0, 1e-6)[0]          # tiny positive still floors
+
+
+def test_raw_pwm_override_is_gated_off_by_default():
+    ok, why, sp, _ = R.to_setpoint(0, 0, 0, 0.3, 40000)
+    assert not ok and sp is None and "disabled" in why
+    ok, _, sp, _ = R.to_setpoint(0, 0, 0, 0.3, 40000, allow_pwm=True)
+    assert ok and sp[3] == 40000
+
+
+def test_validate_config():
+    good = dict(scale=1.0, rp_max_dps=120.0, yaw_max_dps=360.0,
+                tilt_limit_deg=60.0, pwm_lo=10001, pwm_hi=55000)
+    assert R.validate_config(**good)[0]
+    for k, v in (("scale", 0.0), ("scale", -1.0), ("scale", float("nan")),
+                 ("scale", float("inf")), ("rp_max_dps", 0.0),
+                 ("rp_max_dps", float("nan")), ("yaw_max_dps", -3.0),
+                 ("yaw_max_dps", 1e9), ("tilt_limit_deg", 0.0),
+                 ("tilt_limit_deg", 180.0), ("tilt_limit_deg", float("nan")),
+                 ("pwm_lo", 0), ("pwm_lo", 55000), ("pwm_lo", 60000),
+                 ("pwm_hi", 70000), ("pwm_hi", 10001)):
+        assert not R.validate_config(**{**good, k: v})[0], (k, v)
 
 
 if __name__ == "__main__":

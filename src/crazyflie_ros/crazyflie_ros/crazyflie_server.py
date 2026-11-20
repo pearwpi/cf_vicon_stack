@@ -186,12 +186,21 @@ class CrazyflieServer(Node):
         self.rate_yaw_max_dps = float(d("rate_max_yaw_dps", R.RATE_YAW_MAX_DPS).value)
         self.rate_tilt_limit = float(d("rate_tilt_limit_deg", R.RATE_TILT_LIMIT_DEG).value)
         self.rate_att_max_age = float(d("rate_att_max_age_s", R.RATE_ATT_MAX_AGE_S).value)
+        # Bench only: lets RateThrust.thrust_pwm bypass the newton map.
+        self.rate_allow_raw_pwm = bool(d("rate_allow_raw_pwm", False).value)
         self.thrust_poly = tuple(float(c) for c in
                                  d("thrust_poly", list(R.FW_LINEAR_POLY)).value)
         self.thrust_scale = float(d("thrust_scale", 1.0).value)
         self.thrust_pwm_min = int(d("thrust_pwm_min", C.ATT_THRUST_MIN).value)
         self.thrust_pwm_max = int(d("thrust_pwm_max", C.ATT_THRUST_MAX).value)
         ok, why = R.check_poly(self.thrust_poly)
+        if ok:
+            ok, why = R.validate_config(
+                scale=self.thrust_scale, rp_max_dps=self.rate_rp_max_dps,
+                yaw_max_dps=self.rate_yaw_max_dps,
+                tilt_limit_deg=self.rate_tilt_limit,
+                pwm_lo=self.thrust_pwm_min, pwm_hi=self.thrust_pwm_max,
+                att_max_age_s=self.rate_att_max_age)
         if not ok:
             self.get_logger().error(f"{why} -- cmd_rate disabled")
             self.enable_rate_cmd = False
@@ -974,7 +983,7 @@ class CrazyflieServer(Node):
             msg.thrust_pwm, rp_max_dps=self.rate_rp_max_dps,
             yaw_max_dps=self.rate_yaw_max_dps, poly=self.thrust_poly,
             scale=self.thrust_scale, pwm_lo=self.thrust_pwm_min,
-            pwm_hi=self.thrust_pwm_max)
+            pwm_hi=self.thrust_pwm_max, allow_pwm=self.rate_allow_raw_pwm)
         if not ok:
             self._warn_throttled("rate_bad", f"cmd_rate rejected: {why}")
             return

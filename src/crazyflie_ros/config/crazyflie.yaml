@@ -66,6 +66,7 @@
     # Use floats only (0.0, not 0): rclpy rejects mixed int/float arrays.
     thrust_poly: [0.0, 1.8310826276035706e-06, 0.0]
     thrust_scale: 1.0         # from scripts/calibrate_thrust.py
+    rate_allow_raw_pwm: false # bench only: RateThrust.thrust_pwm bypasses the N map
     thrust_pwm_min: 10001     # cf_core.ATT_THRUST_MIN
     thrust_pwm_max: 55000     # cf_core.ATT_THRUST_MAX
 

@@ -151,17 +151,28 @@ def robust_hover(samples, trim=0.1):
 # ==============================================================================
 def to_setpoint(roll_rate, pitch_rate, yaw_rate, thrust, thrust_pwm=0, *,
                 rp_max_dps=RATE_RP_MAX_DPS, yaw_max_dps=RATE_YAW_MAX_DPS,
-                poly=FW_LINEAR_POLY, scale=1.0, pwm_lo=10001, pwm_hi=55000):
+                poly=FW_LINEAR_POLY, scale=1.0, pwm_lo=10001, pwm_hi=55000,
+                allow_pwm=False):
     """RateThrust fields (rad/s FLU, N) -> cflib send_setpoint args.
 
     Returns (ok, reason, setpoint, clamped) with setpoint =
     (roll_dps, pitch_dps, yawrate_dps_cflib, thrust_word). Non-finite input is
     REJECTED (never clamped into something plausible); out-of-range finite
     input is saturated, like the training env's action clip.
+
+    thrust <= 0 N is REJECTED (it used to map silently to the 10001 floor word,
+    which is a spinning-motor command, not "no thrust"). The raw `thrust_pwm`
+    override bypasses the newton map entirely, so it is refused unless the
+    caller opts in (allow_pwm, a bench-only driver parameter, default off).
     """
     vals = (roll_rate, pitch_rate, yaw_rate, thrust)
     if not all(math.isfinite(float(v)) for v in vals):
         return False, f"non-finite field in {vals}", None, False
+    if thrust_pwm and not allow_pwm:
+        return False, ("raw thrust_pwm override is disabled "
+                       "(rate_allow_raw_pwm is false)"), None, False
+    if not thrust_pwm and float(thrust) <= 0.0:
+        return False, f"thrust {float(thrust)} N <= 0 is rejected", None, False
     clamped = False
 
     def sat(v, m):
@@ -182,6 +193,29 @@ def to_setpoint(roll_rate, pitch_rate, yaw_rate, thrust, thrust_pwm=0, *,
     # FLU -> cflib legacy: roll +, pitch + (cflib negates, firmware negates
     # back), yaw NEGATED (firmware inverts legacy yaw rate). See module doc.
     return True, "", (r, p, -y, u), clamped
+
+
+def validate_config(*, scale, rp_max_dps, yaw_max_dps, tilt_limit_deg,
+                    pwm_lo, pwm_hi, att_max_age_s=RATE_ATT_MAX_AGE_S):
+    """Startup check of every number that bounds the rate path. Returns
+    (ok, reason). Anything wrong means cmd_rate stays disabled."""
+    def fin(v):
+        return isinstance(v, (int, float)) and math.isfinite(v)
+    if not (fin(scale) and scale > 0.0):
+        return False, f"thrust_scale must be finite and > 0, got {scale}"
+    if not (fin(rp_max_dps) and 0.0 < rp_max_dps <= 2000.0):
+        return False, f"rate_max_rp_dps must be in (0, 2000], got {rp_max_dps}"
+    if not (fin(yaw_max_dps) and 0.0 < yaw_max_dps <= 2000.0):
+        return False, f"rate_max_yaw_dps must be in (0, 2000], got {yaw_max_dps}"
+    if not (fin(tilt_limit_deg) and 0.0 < tilt_limit_deg < 180.0):
+        return False, f"rate_tilt_limit_deg must be in (0, 180), got {tilt_limit_deg}"
+    if not (fin(att_max_age_s) and 0.0 < att_max_age_s <= 1.0):
+        return False, f"rate_att_max_age_s must be in (0, 1], got {att_max_age_s}"
+    if not (isinstance(pwm_lo, int) and isinstance(pwm_hi, int)
+            and 0 < pwm_lo < pwm_hi <= 65535):
+        return False, (f"need 0 < thrust_pwm_min < thrust_pwm_max <= 65535, "
+                       f"got {pwm_lo}, {pwm_hi}")
+    return True, ""
 
 
 # ==============================================================================

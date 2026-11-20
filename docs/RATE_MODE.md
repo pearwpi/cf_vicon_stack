@@ -21,8 +21,12 @@ nothing in degrees, nothing sign-flipped by the caller.
 - Body frame is FLU, right-handed: x forward, y left, z up.
 - `roll_rate`, `pitch_rate`, `yaw_rate`: rad/s about body +x, +y, +z.
 - `thrust`: collective thrust, newtons, summed over the four rotors.
-- `thrust_pwm`: 0 normally. If > 0 it overrides `thrust` with a raw legacy
-  thrust word (clamped to `thrust_pwm_min..max`). Bench use only.
+- `thrust`: must be > 0. Zero and negative thrust are REJECTED (they used to
+  map silently to the 10001 floor word, a spinning-motor command).
+- `thrust_pwm`: 0 normally. If > 0 it would override `thrust` with a raw legacy
+  thrust word (clamped to `thrust_pwm_min..max`), bypassing the newton map; it
+  is REFUSED unless the driver is started with `rate_allow_raw_pwm:=true`
+  (default false, bench use only).
 - Non-finite fields are rejected (never clamped). Finite out-of-range values
   are saturated to the caps below.
 - `imu` is `<prefix>/body` FLU; accel is specific force (+9.81 on z at rest).
@@ -49,9 +53,17 @@ Driver parameters (`config/crazyflie.yaml`, all safe by default):
 | `rate_mode_setup` | false | let the driver WRITE the firmware flight mode (below) |
 | `rate_max_rp_dps` / `rate_max_yaw_dps` | 120 / 360 | rate caps (training caps) |
 | `rate_tilt_limit_deg` | 60 | tilt guard |
+| `rate_att_max_age_s` | 0.10 | max age of the attitude sample rate output may rely on |
+| `rate_allow_raw_pwm` | false | allow the raw `thrust_pwm` override (bench only) |
+| `takeoff_ground_z_max` | 0.25 | takeoff only from at/below this measured z |
 | `thrust_poly`, `thrust_scale` | linear firmware map, 1.0 | newton -> thrust word |
 | `thrust_pwm_min/max` | 10001 / 55000 | clamp of the thrust word |
 | `enable_imu_log`, `imu_log_hz`, `imu_log_attitude` | true, 100, false | IMU stream |
+
+Startup validation: `cmd_rate` stays disabled (error logged) unless
+`thrust_poly` is increasing, `thrust_scale` is finite and > 0, the rate caps are
+in (0, 2000] deg/s, the tilt limit is in (0, 180) deg, and
+`0 < thrust_pwm_min < thrust_pwm_max <= 65535`.
 
 Firmware parameters that rate mode requires (**NOT changed by default; awaiting
 owner approval**):

@@ -740,7 +740,9 @@ before = s._cmd
 s._cmd_rate(rmsg(r=float("nan")))
 check("NaN is rejected, previous command kept", s._cmd == before)
 
+s.rate_allow_raw_pwm = True
 s._cmd_rate(rmsg(t=0.0, pwm=40000))
+s.rate_allow_raw_pwm = False
 s.tick()
 check("thrust_pwm override sent verbatim", s.cf.sent[-1][4] == 40000, f"{s.cf.sent[-1]}")
 
@@ -1100,6 +1102,34 @@ def _boom(*a): raise IOError("radio")
 s.cf.commander.send_setpoint = _boom
 s.begin_takeoff(0.5); s.state = C.State.FLYING; s.tick()
 check("P5 unlock send failure -> handoff refused", not s._rate_active, s._rate_why)
+
+print("\n[P6] thrust <= 0 rejected, raw pwm gated, config validated at startup (finding 6)")
+s = rate_server(); fly(s); s.tick()
+for _t in (0.0, -1.0):
+    s._cmd = None
+    s._cmd_rate(rmsg(0.1, t=_t))
+    check(f"P6 thrust {_t} N rejected, not stored", s._cmd is None)
+s._cmd_rate(rmsg(t=0.3, pwm=40000))
+check("P6 raw thrust_pwm refused by default (same topic cannot bypass the map)",
+      s._cmd is None and s.rate_allow_raw_pwm is False)
+for _k, _v in (("thrust_scale", 0.0), ("thrust_scale", float("nan")),
+               ("rate_max_rp_dps", -1.0), ("rate_tilt_limit_deg", 0.0),
+               ("thrust_pwm_min", 60000), ("thrust_pwm_max", 70000)):
+    class _N(S.CrazyflieServer):
+        pass
+    _orig = _FakeNode.declare_parameter
+    def _decl(self, name, default, _k=_k, _v=_v):
+        if name == "enable_rate_cmd":
+            return _Param(True)
+        if name == _k:
+            return _Param(_v)
+        return _orig(self, name, default)
+    _FakeNode.declare_parameter = _decl
+    try:
+        _s = S.CrazyflieServer()
+    finally:
+        _FakeNode.declare_parameter = _orig
+    check(f"P6 startup: {_k}={_v} disables cmd_rate", _s.enable_rate_cmd is False)
 
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")
