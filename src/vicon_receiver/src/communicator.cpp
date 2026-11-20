@@ -1,5 +1,8 @@
 #include "vicon_receiver/communicator.hpp"
 
+#include <cctype>
+#include <cmath>
+
 using namespace ViconDataStreamSDK::CPP;
 
 // Constructor for the Communicator class
@@ -102,6 +105,7 @@ bool Communicator::connect()
     vicon_client.EnableMarkerRayData();
     vicon_client.EnableDeviceData();
     vicon_client.EnableDebugData();
+    vicon_client.EnableCameraCalibrationData();   // camera poses, see publish_cameras()
 
     // Set the stream mode and buffer size
     vicon_client.SetStreamMode(StreamMode::ClientPull);
@@ -129,6 +133,7 @@ bool Communicator::disconnect()
     vicon_client.DisableUnlabeledMarkerData();
     vicon_client.DisableDeviceData();
     vicon_client.DisableCentroidData();
+    vicon_client.DisableCameraCalibrationData();
 
     // Log disconnection attempt
     string msg = "Disconnecting from " + hostname + "...";
@@ -186,6 +191,17 @@ void Communicator::get_frame()
             100.0 * frames_dropped_ / (double)frames_seen_);
         latency_sum_ = 0.0;
         latency_max_ = 0.0;
+    }
+
+    // Camera poses, about once a second. One clock read per frame; the SDK
+    // calls inside only run when the second is up.
+    {
+        const auto poll_now = std::chrono::steady_clock::now();
+        if (poll_now >= next_camera_poll_)
+        {
+            next_camera_poll_ = poll_now + std::chrono::seconds(1);
+            publish_cameras();
+        }
     }
 
     // Get the number of subjects in the frame
@@ -356,6 +372,107 @@ void Communicator::get_frame()
             tf_broadcaster_->sendTransform(tf_msg);
 
         }
+    }
+}
+
+// Publish every camera's pose as a static TF frame "cam_<id>" under the vicon
+// frame, so map -> vicon -> cam_<id> resolves like any other frame (RViz, tf2).
+// Camera calibration is static, so this runs about once a second and sends
+// NOTHING unless a camera is new or its pose changed: the steady-state cost is a
+// handful of local SDK calls per second and no extra messages.
+// Translations are millimetres in the SDK, like segment translations.
+void Communicator::publish_cameras()
+{
+    using namespace ViconDataStreamSDK::CPP;
+
+    Output_GetCameraCount count = vicon_client.GetCameraCount();
+    if (count.Result != Result::Success || count.CameraCount == 0)
+    {
+        return;   // calibration data not streamed yet; the next poll retries
+    }
+
+    std::vector<geometry_msgs::msg::TransformStamped> changed;
+    for (unsigned int i = 0; i < count.CameraCount; ++i)
+    {
+        Output_GetCameraName nm = vicon_client.GetCameraName(i);
+        if (nm.Result != Result::Success)
+        {
+            continue;
+        }
+        const std::string name(nm.CameraName);
+
+        Output_GetCameraGlobalTranslation t = vicon_client.GetCameraGlobalTranslation(name);
+        Output_GetCameraGlobalRotationQuaternion q = vicon_client.GetCameraGlobalRotationQuaternion(name);
+        if (t.Result != Result::Success || q.Result != Result::Success)
+        {
+            continue;
+        }
+        const double qn = std::sqrt(q.Rotation[0] * q.Rotation[0] + q.Rotation[1] * q.Rotation[1] +
+                                    q.Rotation[2] * q.Rotation[2] + q.Rotation[3] * q.Rotation[3]);
+        if (qn < 0.5)
+        {
+            continue;   // an unset rotation, not a pose
+        }
+
+        // The numeric id is unique and TF-safe. The SDK name ("Vero v2.2
+        // (2152641)") has spaces and parentheses.
+        std::string frame = "cam_";
+        Output_GetCameraId id = vicon_client.GetCameraId(name);
+        if (id.Result == Result::Success)
+        {
+            frame += std::to_string(id.CameraId);
+        }
+        else
+        {
+            for (char ch : name)
+            {
+                frame += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_';
+            }
+        }
+
+        const std::array<double, 7> v = {
+            t.Translation[0] / 1000.0, t.Translation[1] / 1000.0, t.Translation[2] / 1000.0,
+            q.Rotation[0] / qn, q.Rotation[1] / qn, q.Rotation[2] / qn, q.Rotation[3] / qn};
+
+        auto it = camera_cache_.find(frame);
+        if (it != camera_cache_.end())
+        {
+            bool same = true;
+            for (size_t k = 0; k < v.size(); ++k)
+            {
+                if (std::fabs(it->second[k] - v[k]) > 1e-6)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if (same)
+            {
+                continue;
+            }
+        }
+        camera_cache_[frame] = v;
+
+        geometry_msgs::msg::TransformStamped tf;
+        tf.header.stamp = this->get_clock()->now();
+        tf.header.frame_id = vicon_frame;
+        tf.child_frame_id = frame;
+        tf.transform.translation.x = v[0];
+        tf.transform.translation.y = v[1];
+        tf.transform.translation.z = v[2];
+        tf.transform.rotation.x = v[3];
+        tf.transform.rotation.y = v[4];
+        tf.transform.rotation.z = v[5];
+        tf.transform.rotation.w = v[6];
+        changed.push_back(tf);
+    }
+
+    if (!changed.empty())
+    {
+        tf_static_broadcaster_->sendTransform(changed);
+        RCLCPP_INFO(this->get_logger(),
+                    "cameras: published %zu camera pose(s) as static TF cam_<id> under '%s' (%u in the frame)",
+                    changed.size(), vicon_frame.c_str(), count.CameraCount);
     }
 }
 

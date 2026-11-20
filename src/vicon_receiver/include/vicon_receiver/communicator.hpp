@@ -6,8 +6,10 @@
 #include "publisher.hpp"
 #include <iostream>
 #include <map>
+#include <array>
 #include <chrono>
 #include <string>
+#include <vector>
 #include <unistd.h>
 #include "boost/thread.hpp"
 #include <set>
@@ -61,6 +63,14 @@ private:
     double latency_sum_ = 0.0;
     double latency_max_ = 0.0;
     static constexpr unsigned long LOG_EVERY = 1200;   // ~5 s at 240 Hz
+
+    // Camera poses, published as static TF frames "cam_<id>" under vicon_frame.
+    // Calibration only changes when someone recalibrates, so get_frame() polls it
+    // about once a second and publish_cameras() EMITS ONLY ON CHANGE. The cache
+    // holds the last published [x y z qx qy qz qw] per frame (metres).
+    std::map<std::string, std::array<double, 7>> camera_cache_;
+    std::chrono::steady_clock::time_point next_camera_poll_{};
+    void publish_cameras();
 
     std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
