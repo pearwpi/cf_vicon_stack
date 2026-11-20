@@ -146,9 +146,12 @@ def tilt_deg_of(qx, qy, qz, qw) -> float:
 # axes with a bit-exact identity-about-X quaternion. Both halves are required
 # so a drone genuinely sitting near the origin is never rejected.
 def occluded_sentinel(x, y, z, qx, qy, qz, qw):
-    """True if this frame is the SDK's occluded-segment sentinel."""
-    return (x == 0.0 and y == 0.0 and z == 0.0
-            and qx == 1.0 and qy == 0.0 and qz == 0.0 and qw == 0.0)
+    """True if this frame is the SDK's occluded-segment sentinel.
+
+    Position only: a lost object has been seen as exactly (0,0,0) with BOTH the
+    (1,0,0,0) quaternion and an identity-like one (2026-11-19, 411/411 samples
+    accepted as real). A measured pose is never bit-exactly zero on all axes."""
+    return x == 0.0 and y == 0.0 and z == 0.0
 
 
 @dataclass

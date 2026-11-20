@@ -535,9 +535,8 @@ print("\n[K] occluded frames must not reach the control loop")
 # commanded toward the Vicon origin. These pin the fix.
 check("sentinel is detected", C.occluded_sentinel(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
 check("a normal pose is not", not C.occluded_sentinel(0.9, -0.1, 0.5, 0.0, 0.0, 0.0, 1.0))
-check("a drone genuinely AT the origin is not rejected",
-      not C.occluded_sentinel(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-      "position alone must never be enough")
+check("exact (0,0,0) with an identity quaternion IS the sentinel (seen 2026-11-19)",
+      C.occluded_sentinel(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
 check("position near but not at zero is not rejected",
       not C.occluded_sentinel(1e-9, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
 check("the sentinel quaternion has unit norm, so the zero-norm guard misses it",
