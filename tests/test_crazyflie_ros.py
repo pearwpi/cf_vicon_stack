@@ -821,6 +821,26 @@ check("acc g -> m/s^2, +z at rest", abs(imu.linear_acceleration.z - 9.80665) < 1
 check("orientation flagged as not provided", imu.orientation_covariance[0] == -1.0)
 check("frame_id is the body frame", imu.header.frame_id == "cf1/body")
 
+print("\n[P2] command loss must NOT mask the other guards (finding 2)")
+_b = C.Bounds(-2, 2, -2, 2, 0.05, 1.5)
+_base = dict(now=1000.0, flying=True, pose_age=0.001, quat_age=0.001,
+             pos_only=False, pos=(0., 0., 0.5), ekf=(0., 0., 0.5),
+             got_state=True, vbat=3.9, bounds=_b, stale_since=None,
+             diverge_since=None, cmd_age=5.0, command_timeout=0.3)
+r = C.supervise(**{**_base, "pos": (2.4, 0., 0.5)})
+check("P2 cmd loss + fence violation -> land (not hold)", r.action == "land", r.action)
+r = C.supervise(**{**_base, "pos": (9., 0., 0.5)})
+check("P2 cmd loss + far outside fence -> kill", r.action == "kill", r.action)
+r = C.supervise(**{**_base, "vbat": 3.0})
+check("P2 cmd loss + 3.0 V battery -> land", r.action == "land", r.action)
+r = C.supervise(**{**_base, "ekf": (1.0, 0., 0.5), "diverge_since": 999.0})
+check("P2 cmd loss + sustained EKF mismatch -> land", r.action == "land", r.action)
+r = C.supervise(**{**_base, "ekf": (1.0, 0., 0.5)})
+check("P2 cmd loss + fresh EKF mismatch still tracks onset while holding",
+      r.action == "hold" and r.diverge_since == 1000.0, f"{r.action} {r.diverge_since}")
+r = C.supervise(**_base)
+check("P2 cmd loss alone still holds", r.action == "hold", r.action)
+
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")
 print("ALL CHECKS PASSED" if FAIL == 0 else "FAILURES ABOVE")

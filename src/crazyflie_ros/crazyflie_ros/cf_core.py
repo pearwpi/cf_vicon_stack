@@ -394,19 +394,6 @@ def supervise(*, now, flying, pose_age, quat_age, pos_only,
                     f"ambiguous")
         return r
 
-    # --- command-source watchdog ---------------------------------------------
-    # New in the ROS split, and the reason the split needs it. When teleop and
-    # the radio live in one process, a dead controller means a dead sender. Once
-    # they are separate nodes, the teleop can die, the executor can stall, or
-    # DDS can partition, and the driver would happily keep flying on the last
-    # setpoint forever. Hold position instead: this is a "stop listening", not
-    # an emergency, so it must not land or kill.
-    if (flying and command_timeout is not None and cmd_age is not None
-            and cmd_age > command_timeout):
-        r.action = "hold"
-        r.reason = f"no command for {cmd_age * 1000:.0f} ms -- holding position"
-        return r
-
     # --- EKF vs Vicon divergence ---------------------------------------------
     if pos is not None and ekf is not None and got_state:
         err = math.dist(ekf, pos)
@@ -438,6 +425,22 @@ def supervise(*, now, flying, pose_age, quat_age, pos_only,
     if vbat and vbat < BATT_LAND_V and flying:
         r.action, r.reason = "land", f"BATTERY CRITICAL ({vbat:.2f} V)"
         return r
+
+    # --- command-source watchdog ---------------------------------------------
+    # New in the ROS split, and the reason the split needs it. When teleop and
+    # the radio live in one process, a dead controller means a dead sender. Once
+    # they are separate nodes, the teleop can die, the executor can stall, or
+    # DDS can partition, and the driver would happily keep flying on the last
+    # setpoint forever. Hold position instead: this is a "stop listening", not
+    # an emergency, so it must not land or kill.
+    #
+    # EVALUATED LAST, on purpose: a policy outage must never mask a fence
+    # violation, a sustained EKF mismatch or a dead battery. Those guards run
+    # first (and keep updating their own timers) and win over the hold.
+    if (flying and command_timeout is not None and cmd_age is not None
+            and cmd_age > command_timeout):
+        r.action = "hold"
+        r.reason = f"no command for {cmd_age * 1000:.0f} ms -- holding position"
 
     return r
 
