@@ -841,6 +841,50 @@ check("P2 cmd loss + fresh EKF mismatch still tracks onset while holding",
 r = C.supervise(**_base)
 check("P2 cmd loss alone still holds", r.action == "hold", r.action)
 
+print("\n[P1] takeoff only from an eligible ground state; emergency latches (finding 1)")
+for _st in (C.State.TAKEOFF, C.State.FLYING, C.State.LANDING, C.State.STOPPED):
+    s = rate_server()
+    s.state = _st
+    s._latest = pose_at(0, 0, 0.02, t=_time.time())
+    s._last_quat_ok_t = s._latest.recv_time
+    ok = s.begin_takeoff(0.5)
+    check(f"P1 takeoff refused in {_st}: no arm/unlock/param write, state kept",
+          (not ok) and s.cf.sent == [] and s.cf.param_writes == []
+          and not s._armed and s.state == _st,
+          f"ok={ok} sent={s.cf.sent} w={s.cf.param_writes} armed={s._armed}")
+s = rate_server(); fly(s); s.tick()
+s.cf.sent.clear(); s.cf.param_writes.clear()
+check("P1 second /takeoff while airborne sends zero-thrust packet? no",
+      s.begin_takeoff(0.5) is False and not any(e[0] == "rpyt" for e in s.cf.sent)
+      and s.cf.param_writes == [] and s.state == C.State.FLYING)
+s = rate_server()
+s._latest = pose_at(0, 0, 0.8, t=_time.time()); s._last_quat_ok_t = s._latest.recv_time
+check("P1 takeoff refused when the drone is not on the ground",
+      s.begin_takeoff(0.5) is False and s.cf.sent == [] and not s._armed)
+for _h in (float("nan"), float("inf"), -1.0, 0.0, 9.0, 0.01):
+    s = rate_server()
+    check(f"P1 takeoff target {_h} rejected before arm/unlock",
+          s.begin_takeoff(_h) is False and s.cf.sent == [] and not s._armed
+          and s.cf.param_writes == [] and s.state == C.State.IDLE)
+s = rate_server()
+check("P1 sane takeoff from IDLE still accepted", s.begin_takeoff(0.5) is True)
+s = rate_server(); fly(s); s.tick()
+s.emergency("test")
+s._srv_stop(None, None)
+check("P1 /stop does not clear an emergency latch", s.state == C.State.STOPPED)
+s._latest = pose_at(0, 0, 0.02, t=_time.time()); s._last_quat_ok_t = s._latest.recv_time
+check("P1 takeoff refused after emergency", s.begin_takeoff(0.5) is False)
+s._srv_arm(types.SimpleNamespace(arm=True), None)
+check("P1 /arm true refused while latched", not s._armed)
+s._srv_reset_emergency(None, None)
+check("P1 explicit reset clears the latch", s.state == C.State.IDLE)
+check("P1 takeoff accepted after explicit reset", s.begin_takeoff(0.5) is True)
+s = rate_server(); fly(s); s._armed = False
+s._srv_arm(types.SimpleNamespace(arm=True), None)
+check("P1 /arm true refused while airborne", not s._armed)
+check("P1 reset service advertised",
+      "cf1/reset_emergency" in {n for _, n, _ in make_server().srvs})
+
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")
 print("ALL CHECKS PASSED" if FAIL == 0 else "FAILURES ABOVE")

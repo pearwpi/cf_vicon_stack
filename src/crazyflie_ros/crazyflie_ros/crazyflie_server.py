@@ -20,7 +20,7 @@ to talk to the Crazyflie.
     cmd_velocity_world            
     cmd_full_state                
     cmd_rate  (opt-in; docs/RATE_MODE.md)
-    services: takeoff land arm stop emergency notify_setpoints_stop
+    services: takeoff land arm stop emergency reset_emergency notify_setpoints_stop
 
 WHY COMMANDS ARE BUFFERED, NOT RELAYED
 --------------------------------------
@@ -163,6 +163,10 @@ class CrazyflieServer(Node):
         self.pos_only = bool(d("pos_only", False).value)
         self.no_fly = bool(d("no_fly", False).value)
         self.hover_z = float(d("hover_z", 0.60).value)
+        # Takeoff is only eligible from the ground: state IDLE AND measured z
+        # at or below this (a /stop mid-air leaves state IDLE with the drone
+        # still up there).
+        self.takeoff_ground_z_max = float(d("takeoff_ground_z_max", 0.25).value)
         self.yaw_offset = float(d("yaw_offset", 0.0).value)
         vol = list(d("volume", list(C.DEFAULT_VOLUME)).value)
         self.volume = (float(vol[0]), float(vol[1]), float(vol[2]))
@@ -278,6 +282,8 @@ class CrazyflieServer(Node):
         self.create_service(Arm, f"{p}/arm", self._srv_arm, callback_group=cb)
         self.create_service(Stop, f"{p}/stop", self._srv_stop, callback_group=cb)
         self.create_service(Empty, f"{p}/emergency", self._srv_emergency, callback_group=cb)
+        self.create_service(Empty, f"{p}/reset_emergency",
+                            self._srv_reset_emergency, callback_group=cb)
         self.create_service(NotifySetpointsStop, f"{p}/notify_setpoints_stop",
                             self._srv_notify_stop, callback_group=cb)
         self.create_service(GoTo, f"{p}/go_to", self._srv_go_to, callback_group=cb)
@@ -963,6 +969,16 @@ class CrazyflieServer(Node):
         self._send_position(x, y, z, yaw, p)
 
     def begin_takeoff(self, height) -> bool:
+        # ELIGIBILITY FIRST, before anything is armed, unlocked or written. A
+        # second /takeoff while airborne used to reach the rate-setup branch
+        # and put a zero-thrust RPYT packet on the radio mid-air. Only IDLE is
+        # eligible; STOPPED (emergency) latches until /reset_emergency.
+        if self.state != C.State.IDLE:
+            why = ("emergency latched; call reset_emergency first"
+                   if self.state == C.State.STOPPED else
+                   f"state is {self.state}, not IDLE")
+            self.get_logger().error(f"takeoff refused: {why}")
+            return False
         if self.no_fly:
             self.get_logger().error("takeoff refused: no_fly is set")
             return False
@@ -975,6 +991,21 @@ class CrazyflieServer(Node):
             return False
         if self.bounds is None:
             self.bounds = C.Bounds.centered_on(p.x, p.y, *self.volume)
+        if not (math.isfinite(p.z) and p.z <= self.takeoff_ground_z_max):
+            self.get_logger().error(
+                f"takeoff refused: measured z {p.z:.2f} m is not on the ground "
+                f"(limit {self.takeoff_ground_z_max:.2f} m)")
+            return False
+        try:
+            height = float(height)
+        except (TypeError, ValueError):
+            height = float("nan")
+        if not (math.isfinite(height)
+                and self.bounds.zmin <= height <= self.bounds.zmax):
+            self.get_logger().error(
+                f"takeoff refused: target height {height} m is not a finite "
+                f"value inside [{self.bounds.zmin:.2f}, {self.bounds.zmax:.2f}] m")
+            return False
 
         if not self._est_ready:
             self.get_logger().error(
@@ -1063,7 +1094,13 @@ class CrazyflieServer(Node):
     # SERVICES
     # =========================================================================
     def _srv_takeoff(self, req, resp):
-        self.begin_takeoff(req.height if req.height > 0.0 else self.hover_z)
+        h = float(req.height)
+        # height == 0 is the "use the default" convention; NaN is NOT (NaN > 0
+        # is False, so it used to silently become hover_z). Negative is a bug
+        # in the caller: refuse rather than guess.
+        if h == 0.0:
+            h = self.hover_z
+        self.begin_takeoff(h)
         return resp
 
     def _srv_land(self, req, resp):
@@ -1072,6 +1109,10 @@ class CrazyflieServer(Node):
 
     def _srv_arm(self, req, resp):
         if self.cf is not None:
+            if req.arm and self.state != C.State.IDLE:
+                self.get_logger().error(
+                    f"arm refused: state is {self.state}, not IDLE")
+                return resp
             _arm(self.cf, bool(req.arm))
             self._armed = bool(req.arm)
             self.get_logger().info(f"{'armed' if req.arm else 'disarmed'}")
@@ -1079,13 +1120,21 @@ class CrazyflieServer(Node):
 
     def _srv_stop(self, req, resp):
         self.stop_motors()
-        self.state = C.State.IDLE
+        if self.state != C.State.STOPPED:     # an emergency latch survives /stop
+            self.state = C.State.IDLE
         self._hold = None
         self._revert_flightmode("stop")
         return resp
 
     def _srv_emergency(self, req, resp):
         self.emergency("commanded via /emergency")
+        return resp
+
+    def _srv_reset_emergency(self, req, resp):
+        """The ONLY way out of STOPPED. Motors are already off."""
+        if self.state == C.State.STOPPED:
+            self.state = C.State.IDLE
+            self.get_logger().warn("emergency latch cleared by reset_emergency")
         return resp
 
     def _srv_notify_stop(self, req, resp):
