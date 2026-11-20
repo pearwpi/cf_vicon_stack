@@ -42,6 +42,32 @@
     # Measure your own room; do not inherit these.
     bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
 
+    # ---- IMU stream -> <prefix>/imu (sensor_msgs/Imu, body FLU, rad/s, m/s^2)
+    enable_imu_log: true      # one 24-byte log packet per sample
+    imu_log_hz: 100.0         # rounded to a 10 ms multiple; 100 is the max
+    imu_log_attitude: false   # extra stabilizer.roll/pitch block (tilt guard
+                              # second opinion); costs another log stream
+
+    # ---- Body-rate + collective-thrust path (cmd_rate). READ docs/RATE_MODE.md.
+    # Both switches OFF by default. With either off, cmd_rate is refused.
+    # rate_mode_setup: true makes the driver WRITE flightmode.stabModeRoll=0 and
+    # stabModePitch=0 at each takeoff and restore 1 on land/stop/emergency/
+    # shutdown. Deliberately left false until the owner approves it.
+    enable_rate_cmd: false
+    rate_mode_setup: false
+    rate_max_rp_dps: 120.0    # = isaaclab.bodyrate_rp_max_deg (training cap)
+    rate_max_yaw_dps: 360.0   # = isaaclab.bodyrate_yaw_max_deg
+    rate_tilt_limit_deg: 60.0 # tilt beyond this while flying rates -> land
+    # Collective N -> thrust word. Per-motor force [N] = c0 + c1*u + c2*u^2.
+    # Default: firmware with CONFIG_ENABLE_THRUST_BAT_COMPENSATED (u linear in
+    # N, 0.12 N per motor at 65535, battery compensated onboard).
+    # Raw-PWM firmware: [5.484560e-4, 1.032633e-6, 2.130295e-11] (Foerster 2015).
+    # Use floats only (0.0, not 0): rclpy rejects mixed int/float arrays.
+    thrust_poly: [0.0, 1.8310826276035706e-06, 0.0]
+    thrust_scale: 1.0         # from scripts/calibrate_thrust.py
+    thrust_pwm_min: 10001     # cf_core.ATT_THRUST_MIN
+    thrust_pwm_max: 55000     # cf_core.ATT_THRUST_MAX
+
 /crazyflie_teleop:
   ros__parameters:
     prefix: "cf1"

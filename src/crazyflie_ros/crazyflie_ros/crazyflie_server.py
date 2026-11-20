@@ -16,9 +16,10 @@ to talk to the Crazyflie.
     |    setpoint choke point -----> | ==(Crazyradio)==> Crazyflie commander
     +--------------------------------+
              ^                    |
-    cmd_position / cmd_hover      +--> status, pose
+    cmd_position / cmd_hover      +--> status, pose, imu
     cmd_velocity_world            
     cmd_full_state                
+    cmd_rate  (opt-in; docs/RATE_MODE.md)
     services: takeoff land arm stop emergency notify_setpoints_stop
 
 WHY COMMANDS ARE BUFFERED, NOT RELAYED
@@ -70,6 +71,17 @@ table:
 
 If you want a sane interface, put a converter node in front of this one. Do not
 "fix" it here.
+
+The one exception is cmd_rate (crazyflie_interfaces/RateThrust), which is local
+to this stack, not Crazyswarm2's, and is therefore plain SI:
+
+    RateThrust.*_rate       RADIANS/s      body FLU, converted here (yaw negated)
+    RateThrust.thrust       NEWTONS        collective, mapped to the thrust word
+    imu (sensor_msgs/Imu)   rad/s, m/s^2   body FLU, gravity included
+
+cmd_rate is OFF unless enable_rate_cmd AND rate_mode_setup are both set and the
+firmware has confirmed flightmode.stabModeRoll/Pitch/Yaw = 0. See
+docs/RATE_MODE.md before enabling either.
 """
 import math
 import threading
@@ -83,13 +95,16 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import Imu
 from std_srvs.srv import Empty
 
-from crazyflie_interfaces.msg import (FullState, Hover, Position, Status,
+from crazyflie_interfaces.msg import (FullState, Hover, LogDataGeneric,
+                                      Position, RateThrust, Status,
                                       VelocityWorld)
 from crazyflie_interfaces.srv import Arm, GoTo, Land, NotifySetpointsStop, Stop, Takeoff
 
 from crazyflie_ros import cf_core as C
+from crazyflie_ros import rate_cmd as R
 
 
 # ==============================================================================
@@ -157,6 +172,29 @@ class CrazyflieServer(Node):
         # dies before it ever reads the geofence it was handed.
         bounds_p = list(d("bounds", Parameter.Type.DOUBLE_ARRAY).value or [])
 
+        # ---- body-rate path (docs/RATE_MODE.md). Both switches default OFF:
+        # enable_rate_cmd lets cmd_rate be accepted at all; rate_mode_setup
+        # lets this node WRITE flightmode.stabModeRoll/Pitch = 0 at takeoff
+        # (and restore 1 on land/stop/emergency/shutdown).
+        self.enable_rate_cmd = bool(d("enable_rate_cmd", False).value)
+        self.rate_mode_setup = bool(d("rate_mode_setup", False).value)
+        self.rate_rp_max_dps = float(d("rate_max_rp_dps", R.RATE_RP_MAX_DPS).value)
+        self.rate_yaw_max_dps = float(d("rate_max_yaw_dps", R.RATE_YAW_MAX_DPS).value)
+        self.rate_tilt_limit = float(d("rate_tilt_limit_deg", R.RATE_TILT_LIMIT_DEG).value)
+        self.thrust_poly = tuple(float(c) for c in
+                                 d("thrust_poly", list(R.FW_LINEAR_POLY)).value)
+        self.thrust_scale = float(d("thrust_scale", 1.0).value)
+        self.thrust_pwm_min = int(d("thrust_pwm_min", C.ATT_THRUST_MIN).value)
+        self.thrust_pwm_max = int(d("thrust_pwm_max", C.ATT_THRUST_MAX).value)
+        ok, why = R.check_poly(self.thrust_poly)
+        if not ok:
+            self.get_logger().error(f"{why} -- cmd_rate disabled")
+            self.enable_rate_cmd = False
+        # ---- IMU stream
+        self.enable_imu_log = bool(d("enable_imu_log", True).value)
+        self.imu_log_hz = float(d("imu_log_hz", 100.0).value)
+        self.imu_log_attitude = bool(d("imu_log_attitude", False).value)
+
         # ---- mocap state (written by the executor thread, read by others) ----
         self._pose_lock = threading.Lock()
         self._latest = None            # cf_core.Pose
@@ -180,9 +218,10 @@ class CrazyflieServer(Node):
         self._est_ready = False        # reset done AND settled onto Vicon
         self._est_thread = None
         self._logs = []                # LogConfigs to stop on the way out
+        self._att = None               # (roll, pitch) deg, stabilizer.*, if logged
 
         # ---- command state (written by executor, read by executor) -----------
-        self._cmd = None               # ("position"|"hover"|"velocity_world"|"full_state", payload)
+        self._cmd = None               # ("position"|"hover"|"velocity_world"|"full_state"|"rate", payload)
         self._cmd_t = 0.0
         self._cmd_timed_out = False
 
@@ -195,6 +234,9 @@ class CrazyflieServer(Node):
         self._hold = None              # (x, y, z, yaw_deg) frozen setpoint
         self._takeoff_target = None
         self._armed = False
+        self._fm_written = False       # WE set stabModeRoll/Pitch=0 and owe a revert
+        self._rate_active = False      # firmware-confirmed rate mode, refreshed per tick
+        self._warn_t = {}              # throttled-warning timestamps
 
         self.cf = None
         self.scf = None
@@ -218,9 +260,18 @@ class CrazyflieServer(Node):
                                  self._cmd_velocity_world, 10, callback_group=cb)
         self.create_subscription(FullState, f"{p}/cmd_full_state",
                                  self._cmd_full_state, 10, callback_group=cb)
+        # Always subscribed, so a policy publishing with the path disabled gets
+        # a loud refusal instead of silence.
+        self.create_subscription(RateThrust, f"{p}/cmd_rate",
+                                 self._cmd_rate, 10, callback_group=cb)
 
         self.pub_status = self.create_publisher(Status, f"{p}/status", 10)
         self.pub_pose = self.create_publisher(PoseStamped, f"{p}/pose", 10)
+        # Reliable, depth 10: matches both reliable and best-effort subscribers.
+        self.pub_imu = self.create_publisher(Imu, f"{p}/imu", 10)
+        # [stabilizer.thrust (thrust word), pm.vbat (V)], for calibrate_thrust.py
+        self.pub_thrust = self.create_publisher(LogDataGeneric,
+                                                f"{p}/log/thrust", 10)
 
         self.create_service(Takeoff, f"{p}/takeoff", self._srv_takeoff, callback_group=cb)
         self.create_service(Land, f"{p}/land", self._srv_land, callback_group=cb)
@@ -237,6 +288,13 @@ class CrazyflieServer(Node):
             f"control={self.control_hz:.0f}Hz extpose={self.extpose_hz:.0f}Hz "
             f"cmd_timeout={self.command_timeout*1000:.0f}ms"
             + ("  [NO-FLY]" if self.no_fly else ""))
+        if self.enable_rate_cmd:
+            self.get_logger().warn(
+                f"cmd_rate ENABLED (rate_mode_setup={self.rate_mode_setup}) "
+                f"caps rp={self.rate_rp_max_dps:.0f} yaw={self.rate_yaw_max_dps:.0f} "
+                f"deg/s tilt={self.rate_tilt_limit:.0f} deg "
+                f"thrust_poly={self.thrust_poly} scale={self.thrust_scale:.4f} "
+                f"pwm=[{self.thrust_pwm_min},{self.thrust_pwm_max}]")
 
     # =========================================================================
     # MOCAP
@@ -380,8 +438,141 @@ class CrazyflieServer(Node):
         except Exception as exc:
             self.get_logger().warn(f"kalman variance log failed to start: {exc}")
 
+        if self.enable_imu_log:
+            self._start_imu_log(LogConfig)
+
+        # Controller thrust output, in the SAME units as the RPYT thrust word.
+        # Its own block so an old firmware without the variable cannot take
+        # the state block down with it. 8 bytes at 10 Hz.
+        lgt = LogConfig(name="thrust", period_in_ms=100)
+        lgt.add_variable("stabilizer.thrust", "float")
+        lgt.add_variable("pm.vbat", "float")
+        lgt.data_received_cb.add_callback(self._on_thrust)
+        try:
+            self.cf.log.add_config(lgt)
+            lgt.start()
+            self._logs.append(lgt)
+        except Exception as exc:
+            self.get_logger().warn(f"thrust log failed to start: {exc}")
+        self._check_flightmode_at_connect()
         self._start_extpose()
         return True
+
+    # -------------------------------------------------------------------------
+    # IMU stream. Radio budget on 2M: extpose 50 Hz + setpoints 50 Hz uplink;
+    # downlink rides the ACKs of those packets plus cflib's idle polling, and
+    # is state 20 Hz + kvar 10 Hz + this block. One log packet carries at most
+    # 26 data bytes, so gyro+acc (6 floats, 24 B) is ONE packet per sample;
+    # attitude goes in its own block, off by default. Watch for the log
+    # rate on the imu topic falling short of imu_log_hz: that is congestion.
+    # -------------------------------------------------------------------------
+    def _start_imu_log(self, LogConfig):
+        period = R.log_period_ms(self.imu_log_hz)
+        lg = LogConfig(name="imu", period_in_ms=period)
+        for v in ("gyro.x", "gyro.y", "gyro.z", "acc.x", "acc.y", "acc.z"):
+            lg.add_variable(v, "float")
+        lg.data_received_cb.add_callback(self._on_imu)
+        try:
+            self.cf.log.add_config(lg)
+            lg.start()
+            self._logs.append(lg)
+            self.get_logger().info(f"imu log at {1000.0 / period:.0f} Hz "
+                                   f"-> {self.prefix}/imu")
+        except Exception as exc:
+            self.get_logger().warn(f"imu log failed to start: {exc}")
+        if not self.imu_log_attitude:
+            return
+        lga = LogConfig(name="att", period_in_ms=max(period, 20))
+        for v in ("stabilizer.roll", "stabilizer.pitch"):
+            lga.add_variable(v, "float")
+        lga.data_received_cb.add_callback(self._on_att)
+        try:
+            self.cf.log.add_config(lga)
+            lga.start()
+            self._logs.append(lga)
+        except Exception as exc:
+            self.get_logger().warn(f"attitude log failed to start: {exc}")
+
+    def _on_imu(self, ts, data, cfg):
+        # cflib RX thread. rclpy publish is thread-safe; publishing here
+        # rather than from tick() keeps the full log rate (tick is 50 Hz).
+        (gx, gy, gz), (ax, ay, az) = R.imu_si(
+            data.get("gyro.x", 0.0), data.get("gyro.y", 0.0),
+            data.get("gyro.z", 0.0), data.get("acc.x", 0.0),
+            data.get("acc.y", 0.0), data.get("acc.z", 0.0))
+        m = Imu()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = f"{self.prefix}/body"      # FLU, see RATE_MODE.md
+        m.orientation_covariance[0] = -1.0              # REP-145: not provided
+        m.angular_velocity.x, m.angular_velocity.y, m.angular_velocity.z = gx, gy, gz
+        m.linear_acceleration.x = ax
+        m.linear_acceleration.y = ay
+        m.linear_acceleration.z = az
+        self.pub_imu.publish(m)
+
+    def _on_thrust(self, ts, data, cfg):
+        m = LogDataGeneric()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = self.prefix
+        m.timestamp = int(ts)
+        m.values = [float(data.get("stabilizer.thrust", 0.0)),
+                    float(data.get("pm.vbat", 0.0))]
+        self.pub_thrust.publish(m)
+
+    def _on_att(self, ts, data, cfg):
+        # stabilizer.pitch is the firmware's LEGACY sign (inverted); only the
+        # magnitude is used, by the tilt guard.
+        with self._tlm_lock:
+            self._att = (data.get("stabilizer.roll", 0.0),
+                         data.get("stabilizer.pitch", 0.0))
+
+    # -------------------------------------------------------------------------
+    # Firmware flight mode (RPYT commander). See docs/RATE_MODE.md.
+    # -------------------------------------------------------------------------
+    def _read_flightmode(self):
+        """Firmware-ACKNOWLEDGED values, from cflib's param cache. A write is
+        only reflected here once the Crazyflie echoes it, so this is the
+        firmware's word, not our intent. Unreadable -> None (= not rate)."""
+        out = {}
+        for n in R.FLIGHTMODE_CHECK:
+            try:
+                out[n] = int(float(self.cf.param.get_value(n)))
+            except Exception:
+                out[n] = None
+        return out
+
+    def _set_flightmode(self, mode):
+        """Write stabModeRoll/Pitch. mode is R.RATE or R.ANGLE. Non-blocking:
+        confirmation arrives asynchronously and is read by _read_flightmode."""
+        for n in R.FLIGHTMODE_WRITE:
+            try:
+                self.cf.param.set_value(n, str(mode))
+            except Exception as exc:
+                self.get_logger().error(f"could not set {n}={mode}: {exc}")
+        self._fm_written = (mode == R.RATE)
+
+    def _revert_flightmode(self, why):
+        """Put roll/pitch back to ANGLE if, and only if, this node changed them."""
+        if not self._fm_written or self.cf is None:
+            return
+        self._set_flightmode(R.ANGLE)
+        self._rate_active = False
+        self.get_logger().info(f"flightmode.stabModeRoll/Pitch restored to 1 "
+                               f"(angle) on {why}")
+
+    def _check_flightmode_at_connect(self):
+        fm = self._read_flightmode()
+        if R.rate_mode_confirmed(fm) and not self.rate_mode_setup:
+            # Firmware params live in RAM: an earlier session that lost its link
+            # mid-rate-flight leaves them at 0 until a reboot. The standalone
+            # teleop's ATTITUDE mode would then read its angles as RATES.
+            self.get_logger().error(
+                "firmware is in RATE mode on roll/pitch but rate_mode_setup is "
+                "false -- restoring the default (1 = angle).")
+            self._fm_written = True
+            self._revert_flightmode("connect")
+        else:
+            self.get_logger().info(f"firmware flight mode: {fm}")
 
     def _on_state(self, ts, data, cfg):
         with self._tlm_lock:
@@ -558,6 +749,42 @@ class CrazyflieServer(Node):
         self._accept("velocity_world", (msg.vel.x, msg.vel.y, msg.vel.z,
                                         msg.yaw_rate))
 
+    def _warn_throttled(self, key, msg, period=2.0):
+        now = time.time()
+        if now - self._warn_t.get(key, 0.0) >= period:
+            self._warn_t[key] = now
+            self.get_logger().warn(msg)
+
+    def _cmd_rate(self, msg):
+        """RateThrust: SI, body FLU. Refused unless every gate is open.
+
+        A refused message is NOT stored and does NOT refresh the command
+        watchdog, so a policy publishing into a closed gate ends up holding
+        position, never flying on a stale setpoint.
+        """
+        ok, why = R.rate_gate(enable=self.enable_rate_cmd,
+                              setup=self.rate_mode_setup,
+                              confirmed=self._rate_active, state=self.state)
+        if not ok:
+            self._warn_throttled("rate_gate", why)
+            return
+        ok, why, sp, clamped = R.to_setpoint(
+            msg.roll_rate, msg.pitch_rate, msg.yaw_rate, msg.thrust,
+            msg.thrust_pwm, rp_max_dps=self.rate_rp_max_dps,
+            yaw_max_dps=self.rate_yaw_max_dps, poly=self.thrust_poly,
+            scale=self.thrust_scale, pwm_lo=self.thrust_pwm_min,
+            pwm_hi=self.thrust_pwm_max)
+        if not ok:
+            self._warn_throttled("rate_bad", f"cmd_rate rejected: {why}")
+            return
+        if clamped:
+            self._warn_throttled("rate_clamp", f"cmd_rate saturated -> {sp}", 5.0)
+        self._accept("rate", sp)
+        # A fresh rate command supersedes the post-takeoff / go_to hold point:
+        # the policy, not the hold, is now flying. (LANDING and TAKEOFF are
+        # refused by the gate above, so this cannot cancel a landing.)
+        self._hold = None
+
     def _cmd_full_state(self, msg):
         # FullState.twist.angular is DEGREES/s upstream. Straight through.
         q = msg.pose.orientation
@@ -620,6 +847,9 @@ class CrazyflieServer(Node):
             self.get_logger().warn(
                 f"mocap stale ({self.pose_age()*1000:.0f} ms) -- setpoint frozen")
 
+        if self.enable_rate_cmd and self.rate_mode_setup:
+            self._rate_active = R.rate_mode_confirmed(self._read_flightmode())
+
         if r.action == "kill":
             self.emergency(r.reason)
             return
@@ -633,6 +863,16 @@ class CrazyflieServer(Node):
                 self.get_logger().warn(r.reason)
                 if p is not None:
                     self._hold = (p.x, p.y, p.z, p.yaw_deg)
+        elif self._flying_rate() and p is not None:
+            # Rate-only tilt guard: under rates nothing onboard levels the drone.
+            with self._tlm_lock:
+                att = self._att
+            tilt = p.tilt_deg if p.quat_ok else None
+            if R.tilt_exceeded(tilt, att, self.rate_tilt_limit):
+                self.get_logger().error(
+                    f"AUTO-LAND: tilt over {self.rate_tilt_limit:.0f} deg in "
+                    f"rate mode (vicon {tilt}, onboard {att})")
+                self.begin_land()
 
         if not flying or self.no_fly:
             return
@@ -654,7 +894,19 @@ class CrazyflieServer(Node):
             if self._cmd is None:
                 return
             kind, a = self._cmd
-            if kind == "position":
+            if kind == "rate":
+                if not self._rate_active:
+                    # Firmware no longer confirms rate mode: NEVER send these
+                    # numbers, which it would read as ANGLES. Hold instead.
+                    self.get_logger().error(
+                        "rate mode lost while flying rates -- holding position")
+                    self._cmd = None
+                    if p is not None:
+                        self._hold = (p.x, p.y, p.z, p.yaw_deg)
+                        self._send_position(*self._hold, p)
+                    return
+                self.cf.commander.send_setpoint(*a)
+            elif kind == "position":
                 self._send_position(a[0], a[1], a[2], a[3], p)
             elif kind == "hover":
                 self.cf.commander.send_hover_setpoint(*a)
@@ -664,6 +916,11 @@ class CrazyflieServer(Node):
                 self.cf.commander.send_full_state_setpoint(*a)
         except Exception as exc:
             self.get_logger().error(f"setpoint send failed: {exc}")
+
+    def _flying_rate(self):
+        """True while rate setpoints are what _transmit will actually send."""
+        return (self.state == C.State.FLYING and self._hold is None
+                and self._cmd is not None and self._cmd[0] == "rate")
 
     def _send_position(self, x, y, z, yaw_deg, p):
         """Geofence clamp, then leash, then transmit.
@@ -701,6 +958,7 @@ class CrazyflieServer(Node):
             self.stop_motors()
             self.state = C.State.IDLE
             self._hold = None
+            self._revert_flightmode("landing")
             return
         self._send_position(x, y, z, yaw, p)
 
@@ -745,6 +1003,16 @@ class CrazyflieServer(Node):
         if not self._armed:
             _arm(self.cf, True)
             self._armed = True
+        if self.enable_rate_cmd and self.rate_mode_setup:
+            # On the ground, before any position setpoint. (1) The RPYT
+            # decoder zeroes thrust until it has seen one zero-thrust packet
+            # (thrustLocked, crtp_commander_rpyt.c); without this the first
+            # rate setpoint mid-air would cut the motors. (2) Roll/pitch to
+            # RATE. Only the RPYT path reads these, so the position-controlled
+            # takeoff is unaffected; cmd_rate opens once the firmware echoes.
+            self.cf.commander.send_setpoint(0, 0, 0, 0)
+            self._set_flightmode(R.RATE)
+            self.get_logger().warn("flightmode.stabModeRoll/Pitch -> 0 (rate)")
         # Last ACCEPTED yaw, not this frame's. p.yaw_deg carries whatever
         # Tracker last said, including a solution we rejected.
         yaw0 = self._last_yaw if self._last_yaw is not None else p.yaw_deg
@@ -786,6 +1054,10 @@ class CrazyflieServer(Node):
             self._armed = False
         except Exception:
             pass
+        try:
+            self._revert_flightmode("emergency")   # after the motors are cut
+        except Exception:
+            pass
 
     # =========================================================================
     # SERVICES
@@ -809,6 +1081,7 @@ class CrazyflieServer(Node):
         self.stop_motors()
         self.state = C.State.IDLE
         self._hold = None
+        self._revert_flightmode("stop")
         return resp
 
     def _srv_emergency(self, req, resp):
@@ -897,6 +1170,11 @@ class CrazyflieServer(Node):
         if self.cf is not None:
             try:
                 self.stop_motors()
+            except Exception:
+                pass
+            try:
+                self._revert_flightmode("shutdown")
+                time.sleep(0.2)      # let the param write leave before close
             except Exception:
                 pass
         if self.scf is not None:

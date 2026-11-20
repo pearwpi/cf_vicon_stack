@@ -161,6 +161,10 @@ rclpy.parameter = param_mod
 
 gm = types.ModuleType("geometry_msgs"); gmm = types.ModuleType("geometry_msgs.msg")
 gmm.PoseStamped = _msg_class({"header": _hdr, "pose": _pose})
+sm = types.ModuleType("sensor_msgs"); smm = types.ModuleType("sensor_msgs.msg")
+smm.Imu = _msg_class({"header": _hdr, "orientation": _quat,
+                      "orientation_covariance": lambda: [0.0] * 9,
+                      "angular_velocity": _vec, "linear_acceleration": _vec})
 ss = types.ModuleType("std_srvs"); ssv = types.ModuleType("std_srvs.srv")
 ssv.Empty = type("Empty", (), {"Request": type("R", (), {})})
 
@@ -172,6 +176,8 @@ cim.Hover = _msg_class({"header": _hdr, "vx": 0.0, "vy": 0.0,
 cim.VelocityWorld = _msg_class({"header": _hdr, "vel": _vec, "yaw_rate": 0.0})
 cim.FullState = _msg_class({"header": _hdr, "pose": _pose,
                             "twist": _twist, "acc": _vec})
+cim.RateThrust = _msg_class({"header": _hdr, "roll_rate": 0.0, "pitch_rate": 0.0,
+                             "yaw_rate": 0.0, "thrust": 0.0, "thrust_pwm": 0})
 cim.LogDataGeneric = _msg_class({"header": _hdr, "timestamp": 0, "values": list})
 cim.Status = _msg_class(
     {"header": _hdr, "supervisor_info": 0, "battery_voltage": 0.0,
@@ -188,6 +194,7 @@ for _n in ("Takeoff", "Land", "GoTo", "NotifySetpointsStop", "Arm", "Stop"):
 for _k, _v in {"rclpy": rclpy, "rclpy.node": node_mod, "rclpy.qos": qos_mod,
                "rclpy.callback_groups": cbg_mod, "rclpy.parameter": param_mod,
                "geometry_msgs": gm, "geometry_msgs.msg": gmm,
+               "sensor_msgs": sm, "sensor_msgs.msg": smm,
                "std_srvs": ss, "std_srvs.srv": ssv,
                "crazyflie_interfaces": ci, "crazyflie_interfaces.msg": cim,
                "crazyflie_interfaces.srv": cis}.items():
@@ -208,12 +215,27 @@ class FakeCf:
             def send_position_setpoint(s, x, y, z, yaw):
                 me.sent.append(("position", x, y, z, yaw))
 
+            def send_setpoint(s, *a):           me.sent.append(("rpyt",) + a)
             def send_hover_setpoint(s, *a):     me.sent.append(("hover",) + a)
             def send_velocity_world_setpoint(s, *a): me.sent.append(("vel",) + a)
             def send_full_state_setpoint(s, *a): me.sent.append(("full",) + a)
             def send_stop_setpoint(s):          me.sent.append(("stop",))
             def send_notify_setpoint_stop(s, m): me.sent.append(("notify", m))
         self.commander = _Cmd()
+        # Firmware param store. set_value is ECHOED (applied) unless
+        # echo_params is False, which models a write the firmware never acked.
+        self.params = {"flightmode.stabModeRoll": "1",
+                       "flightmode.stabModePitch": "1",
+                       "flightmode.stabModeYaw": "0"}
+        self.echo_params = True
+        self.param_writes = []
+
+        def _set(n, v):
+            me.param_writes.append((n, v))
+            if me.echo_params:
+                me.params[n] = str(v)
+        self.param = types.SimpleNamespace(set_value=_set,
+                                           get_value=lambda n: me.params[n])
         self.extpos = types.SimpleNamespace(
             send_extpos=lambda *a: me.sent.append(("extpos",) + a),
             send_extpose=lambda *a: me.sent.append(("extpose",) + a))
@@ -406,6 +428,8 @@ for msg, used in {
     "VelocityWorld.msg": {"header", "vel", "yaw_rate"},
     "FullState.msg": {"header", "pose", "twist", "acc"},
     "Status.msg": {"header", "supervisor_info", "battery_voltage"},
+    "RateThrust.msg": {"header", "roll_rate", "pitch_rate", "yaw_rate",
+                       "thrust", "thrust_pwm"},
 }.items():
     have = msg_fields(msg)
     check(f"{msg} has {sorted(used)}", used <= have, f"missing {sorted(used - have)}")
@@ -416,7 +440,7 @@ sends = {n.func.attr for n in ast.walk(tree)
          if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
          and n.func.attr.startswith("send_")}
 check("driver only calls known cflib senders",
-      sends <= {"send_position_setpoint", "send_hover_setpoint",
+      sends <= {"send_position_setpoint", "send_hover_setpoint", "send_setpoint",
                 "send_velocity_world_setpoint", "send_full_state_setpoint",
                 "send_stop_setpoint", "send_notify_setpoint_stop",
                 "send_extpos", "send_extpose", "send_arming_request"},
@@ -425,9 +449,10 @@ check("driver only calls known cflib senders",
 print("\n[H] the driver wires up the topics and services it advertises")
 srv = make_server()
 topics = {t for _, t, _ in srv.subs}
-check("subscribes to all four cmd_* topics",
+check("subscribes to all five cmd_* topics",
       {"cf1/cmd_position", "cf1/cmd_hover", "cf1/cmd_velocity_world",
-       "cf1/cmd_full_state"} <= topics, f"({sorted(topics)})")
+       "cf1/cmd_full_state", "cf1/cmd_rate"} <= topics, f"({sorted(topics)})")
+check("advertises cf1/imu", "cf1/imu" in {t for _, t, _ in srv.pubs})
 check("subscribes to the Vicon topic",
       "/vicon/crazyflie1/crazyflie1" in topics)
 names = {n for _, n, _ in srv.srvs}
@@ -586,6 +611,215 @@ _ok_n = dict(_nose); _ok_n["mean_yaw_deg"] = -1.0; _ok_n["yaw_error_deg"] = -2.0
 _ok_l = dict(_left); _ok_l["mean_yaw_deg"] = -1.4; _ok_l["yaw_error_deg"] = -2.8
 _out2 = FC.report(_ok_n, _ok_l, 0.465, None, 0, 0.4)
 check("a clean single-branch run still passes", "PASS --" in _out2, _out2[-200:])
+
+print("\n[N] cmd_rate: opt-in, firmware-confirmed, falls back to HOLD")
+from crazyflie_ros import rate_cmd as R                       # noqa: E402
+
+B = C.Bounds(-2, 2, -2, 2, 0.05, 1.5)
+
+
+def rate_server(enable=True, setup=True, echo=True):
+    s = make_server(bounds=B, enable_rate_cmd=enable, rate_mode_setup=setup)
+    s.cf.echo_params = echo
+    s._est_ready = True
+    p = pose_at(0, 0, 0.02, t=__import__("time").time())
+    s._latest = p
+    s._last_quat_ok_t = p.recv_time
+    return s
+
+
+def fly(s):
+    """Take off through the real path, then jump to FLYING (as _takeoff_step does)."""
+    s.begin_takeoff(0.5)
+    s.state = C.State.FLYING
+    s._hold = (0.0, 0.0, 0.5, 0.0)
+    s._latest = pose_at(0, 0, 0.5, t=__import__("time").time())
+    s._last_quat_ok_t = s._latest.recv_time
+
+
+def rmsg(r=0.0, p=0.0, y=0.0, t=0.3, pwm=0):
+    m = cim.RateThrust()
+    m.roll_rate, m.pitch_rate, m.yaw_rate, m.thrust, m.thrust_pwm = r, p, y, t, pwm
+    return m
+
+
+import time as _time                                           # noqa: E402
+
+s = make_server(bounds=B)
+check("defaults: enable_rate_cmd and rate_mode_setup are OFF",
+      s.enable_rate_cmd is False and s.rate_mode_setup is False)
+check("defaults: imu on at 100 Hz", s.enable_imu_log and s.imu_log_hz == 100.0)
+
+s = rate_server(enable=False, setup=False)
+fly(s)
+check("disabled: takeoff writes NO flight-mode params", s.cf.param_writes == [])
+check("disabled: no thrust-unlock RPYT packet",
+      not any(e[0] == "rpyt" for e in s.cf.sent))
+s._cmd_rate(rmsg(0.1))
+check("disabled: cmd_rate is not stored", s._cmd is None)
+check("disabled: refusal is logged", any("enable_rate_cmd" in m for _, m in s._log.msgs))
+n = len(s._log.msgs)
+for _ in range(20):
+    s._cmd_rate(rmsg(0.1))
+check("disabled: refusal warning is THROTTLED", len(s._log.msgs) == n)
+
+s = rate_server(enable=True, setup=False)
+fly(s)
+s.tick()
+s._cmd_rate(rmsg(0.1))
+check("enable without setup: refused, params untouched",
+      s._cmd is None and s.cf.param_writes == [])
+
+s = rate_server(echo=False)
+fly(s)
+s.tick()
+s._cmd_rate(rmsg(0.1))
+check("setup but firmware never ACKed: refused (rates would be read as ANGLES)",
+      s._cmd is None, f"{s._cmd}")
+
+s = rate_server()
+s.begin_takeoff(0.5)
+check("takeoff with setup: thrust-unlock (0,0,0,0) sent on the ground",
+      ("rpyt", 0, 0, 0, 0) in s.cf.sent, f"{s.cf.sent}")
+check("takeoff with setup: writes stabModeRoll/Pitch=0, never stabModeYaw",
+      sorted(s.cf.param_writes) == [("flightmode.stabModePitch", "0"),
+                                    ("flightmode.stabModeRoll", "0")],
+      f"{s.cf.param_writes}")
+s.tick()
+s._cmd_rate(rmsg(0.1))
+check("TAKEOFF state: cmd_rate refused", s._cmd is None)
+
+s = rate_server()
+fly(s)
+s.tick()
+check("firmware echo -> rate mode confirmed", s._rate_active)
+s._cmd_rate(rmsg(r=math.radians(30), p=math.radians(-20),
+                 y=math.radians(90), t=0.30))
+check("FLYING + confirmed: cmd_rate stored", s._cmd is not None and s._cmd[0] == "rate")
+check("...and clears the post-takeoff hold", s._hold is None)
+s.cf.sent.clear()
+s.tick()
+k = s.cf.sent[-1] if s.cf.sent else None
+check("transmits send_setpoint", k is not None and k[0] == "rpyt", f"{k}")
+check("roll deg/s +, pitch deg/s +, yaw deg/s NEGATED",
+      k and abs(k[1] - 30) < 1e-6 and abs(k[2] + 20) < 1e-6 and abs(k[3] + 90) < 1e-6,
+      f"{k}")
+check("0.30 N -> thrust word on the linear firmware map",
+      k and k[4] == round(0.30 / 4 / 0.12 * 65535), f"{k}")
+
+s._cmd_rate(rmsg(r=math.radians(500), y=math.radians(-1000), t=99.0))
+s.tick()
+k = s.cf.sent[-1]
+check("rates saturate at the training caps",
+      abs(k[1] - 120) < 1e-6 and abs(k[3] - 360) < 1e-6, f"{k}")
+check("thrust saturates at thrust_pwm_max", k[4] == C.ATT_THRUST_MAX, f"{k}")
+before = s._cmd
+s._cmd_rate(rmsg(r=float("nan")))
+check("NaN is rejected, previous command kept", s._cmd == before)
+
+s._cmd_rate(rmsg(t=0.0, pwm=40000))
+s.tick()
+check("thrust_pwm override sent verbatim", s.cf.sent[-1][4] == 40000, f"{s.cf.sent[-1]}")
+
+# stale -> HOLD with position setpoints, then rate resumes cleanly
+s._cmd_t = _time.time() - 1.0
+s.cf.sent.clear()
+s.tick()
+check("stale cmd_rate -> HOLD position (not land, not kill)",
+      s.state == C.State.FLYING and s._hold is not None
+      and s.cf.sent and s.cf.sent[-1][0] == "position", f"{s.cf.sent[-1:]}")
+s._cmd_rate(rmsg(0.1))
+s.cf.sent.clear()
+s.tick()
+check("fresh cmd_rate after a hold -> rates again",
+      s._hold is None and s.cf.sent[-1][0] == "rpyt", f"{s.cf.sent[-1:]}")
+
+# switch to position and back
+m = cim.Position(); m.x, m.y, m.z, m.yaw = 0.1, 0.0, 0.5, 0.0
+s._cmd_position(m)
+s.cf.sent.clear(); s.tick()
+check("cmd_position after cmd_rate -> position setpoints",
+      s.cf.sent[-1][0] == "position", f"{s.cf.sent[-1:]}")
+s._cmd_rate(rmsg(0.1))
+s.cf.sent.clear(); s.tick()
+check("...and back to rates", s.cf.sent[-1][0] == "rpyt")
+
+# firmware loses rate mode mid-flight -> never sends rates
+s.cf.params["flightmode.stabModePitch"] = "1"
+s.cf.sent.clear(); s.tick()
+check("rate mode lost mid-flight -> HOLD, no RPYT packet",
+      s._hold is not None and all(e[0] != "rpyt" for e in s.cf.sent), f"{s.cf.sent}")
+s.cf.params["flightmode.stabModePitch"] = "0"
+
+# tilt guard
+s = rate_server(); fly(s); s.tick()
+s._cmd_rate(rmsg(0.1))
+h = math.radians(70) / 2
+s._latest = C.Pose(x=0, y=0, z=0.5, qx=math.sin(h), qy=0, qz=0, qw=math.cos(h),
+                   recv_time=_time.time(), stamp=_time.time())
+s._last_quat_ok_t = _time.time()
+s.tick()
+check("tilt > rate_tilt_limit_deg in rate mode -> LAND", s.state == C.State.LANDING)
+_t0 = s._cmd_t
+s._cmd_rate(rmsg(0.2))
+check("LANDING: cmd_rate refused (watchdog not refreshed)",
+      s._cmd_t == _t0 and s.state == C.State.LANDING)
+s.cf.sent.clear(); s.tick()
+check("landing sends position setpoints, not rates",
+      s.cf.sent and all(e[0] == "position" for e in s.cf.sent), f"{s.cf.sent}")
+
+# supervisor still governs rate flight
+s = rate_server(); fly(s); s.tick(); s._cmd_rate(rmsg(0.1))
+s._latest = pose_at(9, 9, 0.5, t=_time.time()); s._last_quat_ok_t = _time.time()
+s.tick()
+check("geofence kill still fires in rate mode", s.state == C.State.STOPPED)
+check("...and flight mode is reverted to angle",
+      s.cf.params["flightmode.stabModeRoll"] == "1"
+      and s.cf.params["flightmode.stabModePitch"] == "1")
+
+s = rate_server(); fly(s); s.tick(); s._cmd_rate(rmsg(0.1))
+s._latest = pose_at(2.4, 0, 0.5, t=_time.time()); s._last_quat_ok_t = _time.time()
+s.tick()
+check("geofence land still fires in rate mode", s.state == C.State.LANDING)
+s._hold = (0, 0, 0.05, 0)
+s.tick()
+check("landing complete -> IDLE and flight mode reverted",
+      s.state == C.State.IDLE and s.cf.params["flightmode.stabModeRoll"] == "1")
+
+s = rate_server(); fly(s); s.tick()
+s._srv_emergency(None, None)
+check("emergency reverts flight mode", s.cf.params["flightmode.stabModePitch"] == "1")
+s = rate_server(); fly(s); s.tick()
+s._srv_stop(None, None)
+check("stop reverts flight mode", s.cf.params["flightmode.stabModeRoll"] == "1")
+s = rate_server(); fly(s); s.tick()
+s.shutdown()
+check("shutdown reverts flight mode", s.cf.params["flightmode.stabModeRoll"] == "1")
+
+s = rate_server(enable=False, setup=False)
+s.cf.params["flightmode.stabModeRoll"] = "0"
+s.cf.params["flightmode.stabModePitch"] = "0"
+s._check_flightmode_at_connect()
+check("connect finds a leftover rate mode without setup -> restores angle",
+      s.cf.params["flightmode.stabModeRoll"] == "1")
+s = rate_server(enable=False, setup=False)
+s._check_flightmode_at_connect()
+check("connect with default params writes nothing", s.cf.param_writes == [])
+s = rate_server(enable=False, setup=False)
+s._srv_stop(None, None)
+check("stop without rate setup writes nothing", s.cf.param_writes == [])
+
+print("\n[O] imu: cflib log units -> sensor_msgs/Imu SI, body FLU")
+s = make_server()
+s._on_imu(0, {"gyro.x": 90.0, "gyro.y": -45.0, "gyro.z": 180.0,
+              "acc.x": 0.0, "acc.y": 0.0, "acc.z": 1.0}, None)
+imu = [pp for _, t, pp in s.pubs if t == "cf1/imu"][0].msgs[-1]
+check("gyro deg/s -> rad/s", abs(imu.angular_velocity.x - math.pi / 2) < 1e-9
+      and abs(imu.angular_velocity.y + math.pi / 4) < 1e-9
+      and abs(imu.angular_velocity.z - math.pi) < 1e-9)
+check("acc g -> m/s^2, +z at rest", abs(imu.linear_acceleration.z - 9.80665) < 1e-9)
+check("orientation flagged as not provided", imu.orientation_covariance[0] == -1.0)
+check("frame_id is the body frame", imu.header.frame_id == "cf1/body")
 
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")
