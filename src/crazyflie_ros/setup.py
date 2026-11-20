@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'crazyflie_server = crazyflie_ros.crazyflie_server:main',
             'teleop = crazyflie_ros.teleop_node:main',
+            'circle = crazyflie_ros.circle_node:main',
         ],
     },
 )

@@ -5,8 +5,10 @@
 
 /crazyflie_server:
   ros__parameters:
-    uri: "radio://0/80/2M/E7E7E7E701"
-    vicon_topic: "/vicon/crazyflie_a2/crazyflie_a2"
+    uri: "radio://0/80/2M/E7E7E7E703"   # acp_cf_03, confirmed by radio scan
+    # Vicon object "cf3" (per the operator). Confirm the topic exists with
+    # `ros2 topic list | grep vicon` once the bridge is running.
+    vicon_topic: "/vicon/cf3/cf3"
     prefix: "cf1"
 
     control_hz: 50.0          # setpoint transmit rate
@@ -31,16 +33,17 @@
                                  # on the drone's position at startup. Only
                                  # sane in a small, symmetric space.
     # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]  -- absolute, Vicon frame.
-    # These are the PEAR volume. The scene map
-    # (scenes/a2_train/a2_train.txt) explains how each number was
-    # chosen: y and z from what Vicon tracks, pulled in far enough that a
-    # geofence KILL -- 0.80 m past the soft bound -- still lands inside tracked
-    # space; x tighter still, because the splat has no floor beyond it.
-    # zmin is the one number that deliberately DISAGREES with that map, which
-    # says 0.30. The map's boundary is where a PLAN may go; this is where the
-    # drone may be, and it still has to be able to land.
-    # Measure your own room; do not inherit these.
-    bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
+    # = the 7.0 x 3.0 x 2.5 m SIM ARENA the policies are trained in, mapped into
+    # Vicon coordinates with pe_hitl's washburn_calib.yaml (marks' rectangle
+    # assumed centred on the arena; h0 = 0.30, so the arena top is 2.80 m above
+    # the floor). The largest axis-aligned box that fits INSIDE the arena, because
+    # the arena is rotated 0.55 deg from Vicon's axes. The nets are about 0.5 m
+    # outside the arena (estimate, not measured) and reach about camera height
+    # (3.3 m). Land fires 0.30 m and the motor cut 0.80 m outside this box
+    # (constants in cf_core.py), so the cut line is beyond the nets.
+    # RECOMPUTE THESE if washburn_calib.yaml or the arena size changes.
+    # zmin stays 0.00: the drone has to be able to land on the floor.
+    bounds: [-1.15, 5.81, -1.31, 1.62, 0.00, 2.80]
 
 /crazyflie_teleop:
   ros__parameters:
@@ -48,3 +51,13 @@
     rate_hz: 50.0
     hover_z: 0.60
     keyboard: "termios"       # "termios" works over SSH; "pygame" needs a display
+
+/crazyflie_circle:
+  ros__parameters:
+    prefix: "cf1"
+    vicon_topic: "/vicon/cf3/cf3"   # keep in step with the server's
+    height: 1.0
+    diameter: 0.5             # 0.5 m keeps the circle ~28 cm inside xmin from the current start spot
+    laps: 2.0
+    period_s: 10.0            # seconds per lap (~0.16 m/s at 0.5 m diameter)
+    center: "start"           # "start" or "origin"
