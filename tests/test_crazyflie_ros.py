@@ -625,6 +625,7 @@ def rate_server(enable=True, setup=True, echo=True):
     p = pose_at(0, 0, 0.02, t=__import__("time").time())
     s._latest = p
     s._last_quat_ok_t = p.recv_time
+    s._last_quat_tilt = p.tilt_deg
     return s
 
 
@@ -635,6 +636,7 @@ def fly(s):
     s._hold = (0.0, 0.0, 0.5, 0.0)
     s._latest = pose_at(0, 0, 0.5, t=__import__("time").time())
     s._last_quat_ok_t = s._latest.recv_time
+    s._last_quat_tilt = s._latest.tilt_deg
 
 
 def rmsg(r=0.0, p=0.0, y=0.0, t=0.3, pwm=0):
@@ -758,6 +760,7 @@ h = math.radians(70) / 2
 s._latest = C.Pose(x=0, y=0, z=0.5, qx=math.sin(h), qy=0, qz=0, qw=math.cos(h),
                    recv_time=_time.time(), stamp=_time.time())
 s._last_quat_ok_t = _time.time()
+s._last_quat_tilt = s._latest.tilt_deg
 s.tick()
 check("tilt > rate_tilt_limit_deg in rate mode -> LAND", s.state == C.State.LANDING)
 _t0 = s._cmd_t
@@ -847,6 +850,7 @@ for _st in (C.State.TAKEOFF, C.State.FLYING, C.State.LANDING, C.State.STOPPED):
     s.state = _st
     s._latest = pose_at(0, 0, 0.02, t=_time.time())
     s._last_quat_ok_t = s._latest.recv_time
+    s._last_quat_tilt = s._latest.tilt_deg
     ok = s.begin_takeoff(0.5)
     check(f"P1 takeoff refused in {_st}: no arm/unlock/param write, state kept",
           (not ok) and s.cf.sent == [] and s.cf.param_writes == []
@@ -884,6 +888,69 @@ s._srv_arm(types.SimpleNamespace(arm=True), None)
 check("P1 /arm true refused while airborne", not s._armed)
 check("P1 reset service advertised",
       "cf1/reset_emergency" in {n for _, n, _ in make_server().srvs})
+
+print("\n[P3] rate output needs a FRESH VALID attitude; otherwise land (finding 3)")
+
+
+def _rate_flying():
+    s = rate_server(); fly(s); s.tick()
+    s._cmd_rate(rmsg(0.1))
+    s.cf.sent.clear(); s.tick()
+    assert s.cf.sent and s.cf.sent[-1][0] == "rpyt"
+    s.cf.sent.clear()
+    return s
+
+
+def _no_rpyt(s):
+    return not any(e[0] == "rpyt" for e in s.cf.sent)
+
+
+s = _rate_flying()
+s._latest = pose_at(0, 0, 0.5, t=_time.time() - 0.2)      # stale mocap, > 150 ms
+s._last_quat_ok_t = _time.time() - 0.2
+s.tick()
+check("P3 stale mocap (>150 ms, <400 ms): NO rate packet, lands instead",
+      _no_rpyt(s) and s.state == C.State.LANDING, f"{s.state} {s.cf.sent}")
+
+s = _rate_flying()
+s._last_quat_ok_t = _time.time() - 0.3                    # quat rejected 300 ms
+s.tick()
+check("P3 quaternion rejected, no onboard attitude: NO rate packet, lands",
+      _no_rpyt(s) and s.state == C.State.LANDING, f"{s.state} {s.cf.sent}")
+
+s = _rate_flying()
+s._last_quat_ok_t = _time.time() - 0.3
+s._att, s._att_t = (2.0, -3.0), _time.time()
+s.cf.sent.clear(); s.tick()
+check("P3 quaternion rejected but FRESH onboard attitude: rates continue",
+      s.state == C.State.FLYING and s.cf.sent and s.cf.sent[-1][0] == "rpyt",
+      f"{s.state} {s.cf.sent}")
+
+s = _rate_flying()
+s._last_quat_ok_t = _time.time() - 0.3
+s._att, s._att_t = (2.0, -3.0), _time.time() - 0.5        # onboard sample is old
+s.tick()
+check("P3 stale onboard attitude is not reused: lands",
+      _no_rpyt(s) and s.state == C.State.LANDING)
+
+s = _rate_flying()
+s._last_quat_ok_t = _time.time() - 0.3
+s._last_quat_tilt = 80.0                                  # stale AND over limit
+s._att, s._att_t = (float("nan"), 0.0), _time.time()
+s.tick()
+check("P3 non-finite onboard attitude does not count as valid: lands",
+      _no_rpyt(s) and s.state == C.State.LANDING)
+
+s = _rate_flying()
+s._att, s._att_t = (75.0, 0.0), _time.time()
+s.tick()
+check("P3 fresh onboard tilt over limit lands even if Vicon says upright",
+      _no_rpyt(s) and s.state == C.State.LANDING)
+
+s = _rate_flying()
+check("P3 transmit itself refuses rates when the per-tick attitude gate is closed",
+      (setattr(s, "_rate_att_ok", False), s._transmit(_time.time(), s.latest()),
+       _no_rpyt(s))[-1])
 
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")

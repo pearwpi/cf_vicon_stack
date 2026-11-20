@@ -160,6 +160,33 @@ def test_imu_si():
     assert a == (0.0, 0.0, R.G)
 
 
+# --- attitude freshness (finding 3) --------------------------------------------
+def _chk(**kw):
+    base = dict(mocap_stale=False, vicon_tilt=5.0, vicon_age=0.01,
+                onboard_rp=None, onboard_age=None)
+    base.update(kw)
+    return R.attitude_check(**base)[0]
+
+
+def test_attitude_check_ok_and_stale_and_tilt():
+    assert _chk() == "ok"
+    assert _chk(vicon_age=0.5) == "stale"
+    assert _chk(vicon_tilt=None, vicon_age=1e9) == "stale"
+    assert _chk(mocap_stale=True) == "stale"
+    assert _chk(vicon_tilt=70.0) == "tilt"
+
+
+def test_attitude_check_never_reuses_stale_or_nonfinite_samples():
+    # stale vicon over the limit is ignored, but then nothing fresh remains
+    assert _chk(vicon_tilt=80.0, vicon_age=0.5) == "stale"
+    assert _chk(vicon_tilt=float("nan")) == "stale"
+    assert _chk(vicon_age=0.5, onboard_rp=(float("nan"), 0.0),
+                onboard_age=0.01) == "stale"
+    assert _chk(vicon_age=0.5, onboard_rp=(1.0, 2.0), onboard_age=0.5) == "stale"
+    assert _chk(vicon_age=0.5, onboard_rp=(1.0, 2.0), onboard_age=0.01) == "ok"
+    assert _chk(onboard_rp=(70.0, 0.0), onboard_age=0.01) == "tilt"
+
+
 if __name__ == "__main__":
     # Same calling convention as the other suites, for the Docker build loop.
     fails = 0

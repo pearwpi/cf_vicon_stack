@@ -57,6 +57,8 @@ FOERSTER_POLY = (5.484560e-4, 1.032633e-6, 2.130295e-11)
 RATE_RP_MAX_DPS = 120.0
 RATE_YAW_MAX_DPS = 360.0
 RATE_TILT_LIMIT_DEG = 60.0
+# Rate output needs an attitude sample no older than this (2 control ticks).
+RATE_ATT_MAX_AGE_S = 0.10
 
 # Which flightmode params must read RATE (0) before cmd_rate is honoured.
 # stabModeYaw is RATE by firmware default and is only VERIFIED, never written.
@@ -201,6 +203,39 @@ def tilt_exceeded(vicon_tilt_deg, onboard_rp_deg=None,
         if abs(r) > limit or abs(p) > limit:
             return True
     return False
+
+
+def attitude_check(*, mocap_stale, vicon_tilt, vicon_age,
+                   onboard_rp, onboard_age,
+                   max_age=RATE_ATT_MAX_AGE_S, limit=RATE_TILT_LIMIT_DEG):
+    """May rate setpoints be sent THIS tick? Returns (status, detail) with
+    status "ok" | "tilt" | "stale".
+
+    Under rates nothing onboard levels the drone, so a rate packet is only sent
+    while at least one FRESH, FINITE attitude sample proves the tilt is inside
+    the limit. vicon_tilt/vicon_age describe the last quaternion the flip
+    filter ACCEPTED (None / huge age when there never was one); onboard_* the
+    last stabilizer.roll/pitch sample. Every sample is age-gated, so a frozen
+    or rejected stream can never be reused. A stale mocap POSITION also fails:
+    the EKF is dead-reckoning and nothing may be commanded on it.
+    """
+    def good(v, age):
+        return (v is not None and age is not None and math.isfinite(age)
+                and age <= max_age)
+
+    if mocap_stale:
+        return "stale", "mocap pose stale"
+    v_ok = good(vicon_tilt, vicon_age) and math.isfinite(vicon_tilt)
+    o_ok = (good(onboard_rp, onboard_age)
+            and all(math.isfinite(x) for x in onboard_rp))
+    if not (v_ok or o_ok):
+        return "stale", ("no fresh valid attitude (vicon age "
+                         f"{vicon_age}, onboard age {onboard_age})")
+    if tilt_exceeded(vicon_tilt if v_ok else None,
+                     onboard_rp if o_ok else None, limit):
+        return "tilt", (f"tilt over {limit:.0f} deg (vicon {vicon_tilt if v_ok else None}, "
+                        f"onboard {onboard_rp if o_ok else None})")
+    return "ok", ""
 
 
 # ==============================================================================

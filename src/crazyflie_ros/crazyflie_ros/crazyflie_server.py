@@ -185,6 +185,7 @@ class CrazyflieServer(Node):
         self.rate_rp_max_dps = float(d("rate_max_rp_dps", R.RATE_RP_MAX_DPS).value)
         self.rate_yaw_max_dps = float(d("rate_max_yaw_dps", R.RATE_YAW_MAX_DPS).value)
         self.rate_tilt_limit = float(d("rate_tilt_limit_deg", R.RATE_TILT_LIMIT_DEG).value)
+        self.rate_att_max_age = float(d("rate_att_max_age_s", R.RATE_ATT_MAX_AGE_S).value)
         self.thrust_poly = tuple(float(c) for c in
                                  d("thrust_poly", list(R.FW_LINEAR_POLY)).value)
         self.thrust_scale = float(d("thrust_scale", 1.0).value)
@@ -205,6 +206,8 @@ class CrazyflieServer(Node):
         self._last_yaw = None
         self._last_yaw_t = None
         self._last_quat_ok_t = None
+        self._last_quat_tilt = None    # tilt [deg] of the last ACCEPTED quaternion
+        self._rate_att_ok = False      # per-tick: a fresh valid attitude exists
         self._yaw_rejects = 0
         self._occluded = 0
         self._occl_warned = False
@@ -223,6 +226,7 @@ class CrazyflieServer(Node):
         self._est_thread = None
         self._logs = []                # LogConfigs to stop on the way out
         self._att = None               # (roll, pitch) deg, stabilizer.*, if logged
+        self._att_t = None             # time.time() the sample above arrived
 
         # ---- command state (written by executor, read by executor) -----------
         self._cmd = None               # ("position"|"hover"|"velocity_world"|"full_state"|"rate", payload)
@@ -363,6 +367,7 @@ class CrazyflieServer(Node):
             self._last_yaw = p.yaw_deg
             self._last_yaw_t = now
             self._last_quat_ok_t = now
+            self._last_quat_tilt = p.tilt_deg
 
         self._recv_times.append(now)
         if len(self._recv_times) > self._max_recv_times:
@@ -531,6 +536,7 @@ class CrazyflieServer(Node):
         with self._tlm_lock:
             self._att = (data.get("stabilizer.roll", 0.0),
                          data.get("stabilizer.pitch", 0.0))
+            self._att_t = time.time()
 
     # -------------------------------------------------------------------------
     # Firmware flight mode (RPYT commander). See docs/RATE_MODE.md.
@@ -834,6 +840,7 @@ class CrazyflieServer(Node):
             return
 
         cmd_age = (now - self._cmd_t) if self._cmd_t else 1e9
+        self._rate_att_ok = False
 
         r = C.supervise(
             now=now, flying=flying,
@@ -869,20 +876,39 @@ class CrazyflieServer(Node):
                 self.get_logger().warn(r.reason)
                 if p is not None:
                     self._hold = (p.x, p.y, p.z, p.yaw_deg)
-        elif self._flying_rate() and p is not None:
-            # Rate-only tilt guard: under rates nothing onboard levels the drone.
-            with self._tlm_lock:
-                att = self._att
-            tilt = p.tilt_deg if p.quat_ok else None
-            if R.tilt_exceeded(tilt, att, self.rate_tilt_limit):
-                self.get_logger().error(
-                    f"AUTO-LAND: tilt over {self.rate_tilt_limit:.0f} deg in "
-                    f"rate mode (vicon {tilt}, onboard {att})")
-                self.begin_land()
+        elif self._flying_rate():
+            self._rate_guard(now, r.mocap_stale)
 
         if not flying or self.no_fly:
             return
         self._transmit(now, p)
+
+    def _rate_guard(self, now, mocap_stale):
+        """Rate-only attitude guard: under rates nothing onboard levels the
+        drone, so a rate packet needs a FRESH, VALID attitude every tick.
+
+        Sources are age-gated (R.attitude_check): the last accepted Vicon
+        quaternion and, if logged, the onboard roll/pitch. If neither is fresh,
+        or the mocap pose is stale, or the tilt is over the limit, rates STOP
+        and the node LANDS. Land is the most conservative defined action here:
+        a position hold would trust the very pose/attitude that just went
+        missing. (Mocap dead > 400 ms still escalates to a motor kill.)
+        """
+        with self._tlm_lock:
+            att, att_t = self._att, self._att_t
+        qa = self.quat_age()
+        status, why = R.attitude_check(
+            mocap_stale=mocap_stale, vicon_tilt=self._last_quat_tilt,
+            vicon_age=qa, onboard_rp=att,
+            onboard_age=None if att_t is None else now - att_t,
+            max_age=self.rate_att_max_age, limit=self.rate_tilt_limit)
+        if status == "ok":
+            self._rate_att_ok = True
+            return
+        self._rate_att_ok = False
+        self.get_logger().error(
+            f"AUTO-LAND: rate mode without a usable attitude ({status}): {why}")
+        self.begin_land()
 
     def _transmit(self, now, p):
         """THE ONLY PLACE A SETPOINT LEAVES THIS NODE."""
@@ -901,6 +927,10 @@ class CrazyflieServer(Node):
                 return
             kind, a = self._cmd
             if kind == "rate":
+                if not self._rate_att_ok:
+                    # Belt and braces: tick() clears this and only _rate_guard
+                    # sets it, so rates never leave on an unvalidated attitude.
+                    return
                 if not self._rate_active:
                     # Firmware no longer confirms rate mode: NEVER send these
                     # numbers, which it would read as ANGLES. Hold instead.
