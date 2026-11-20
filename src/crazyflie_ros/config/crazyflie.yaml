@@ -34,16 +34,15 @@
                                  # sane in a small, symmetric space.
     # bounds: [xmin, xmax, ymin, ymax, zmin, zmax]  -- absolute, Vicon frame.
     # = the 7.0 x 3.0 x 2.5 m SIM ARENA the policies are trained in, mapped into
-    # Vicon coordinates with pe_hitl's washburn_calib.yaml (marks' rectangle
-    # assumed centred on the arena; h0 = 0.30, so the arena top is 2.80 m above
-    # the floor). The largest axis-aligned box that fits INSIDE the arena, because
+    # Vicon coordinates with pe_hitl's washburn_calib.yaml (object-offset corrected,
+    # sim offset 0.195 / 0.239 / 0.30, so the arena top is 2.80 m above the floor). The largest axis-aligned box that fits INSIDE the arena, because
     # the arena is rotated 0.55 deg from Vicon's axes. The nets are about 0.5 m
     # outside the arena (estimate, not measured) and reach about camera height
     # (3.3 m). Land fires 0.30 m and the motor cut 0.80 m outside this box
     # (constants in cf_core.py), so the cut line is beyond the nets.
     # RECOMPUTE THESE if washburn_calib.yaml or the arena size changes.
     # zmin stays 0.00: the drone has to be able to land on the floor.
-    bounds: [-1.15, 5.81, -1.31, 1.62, 0.00, 2.80]
+    bounds: [-1.20, 5.76, -1.31, 1.61, 0.00, 2.80]
 
 /crazyflie_teleop:
   ros__parameters:
