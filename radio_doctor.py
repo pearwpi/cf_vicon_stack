@@ -19,6 +19,7 @@ Crazyradio 2.0 does present a CDC interface, so it can be held indefinitely.
     python3 radio_doctor.py         # diagnose only, changes nothing
     python3 radio_doctor.py --fix   # detach kernel drivers + USB reset
     sudo python3 radio_doctor.py --fix   # also sees other users' processes
+    python3 radio_doctor.py --scan  # also hunt for drones at unknown addresses
 """
 
 import argparse
@@ -149,12 +150,99 @@ def service_state(name):
         return "unknown"
 
 
+FACTORY_ADDR = 0xE7E7E7E7E7
+RATES = (("250K", 0), ("1M", 1), ("2M", 2))   # Crazyradio.DR_* values
+
+
+def parse_ids(spec):
+    """'1-10,15,0x1a' -> [1..10, 15, 26]. Each id becomes address E7E7E7E7<id>."""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = (int(x, 0) for x in part.split("-", 1))
+            out.extend(range(lo, hi + 1))
+        else:
+            out.append(int(part, 0))
+    bad_ids = [i for i in out if not 0 <= i <= 0xFF]
+    if bad_ids:
+        raise ValueError(f"ids must be 0-255: {bad_ids}")
+    return out
+
+
+def uri_address(uri):
+    """Address of a radio://0/<ch>/<rate>/<ADDR> URI, or None if it has none."""
+    parts = uri.split("/")
+    if len(parts) >= 6 and parts[5]:
+        return int(parts[5], 16)
+    return None
+
+
+def wide_scan(addresses):
+    """Scan every channel and data rate at each address. Returns found URIs.
+
+    Talks to the Crazyradio directly, NOT through cflib.crtp.scan_interfaces(),
+    which swallows USBError and returns []: a radio that is EBUSY, or that
+    drops off the bus mid-scan, then reads as "no drone", and you go hunting
+    for a radio problem in the drone. Here a USB error stops the scan and is
+    reported as what it is.
+    """
+    from cflib.drivers.crazyradio import Crazyradio
+
+    radio = Crazyradio()
+    found = []
+    try:
+        radio.set_arc(1)            # one retry: a scan only needs a single ACK
+        for addr in addresses:
+            radio.set_address(tuple(addr.to_bytes(5, "big")))
+            hits = []
+            for name, dr in RATES:
+                radio.set_data_rate(dr)
+                for ch in radio.scan_channels(0, 125, (0xFF,)):
+                    hits.append(f"radio://0/{ch}/{name}/{addr:010X}")
+            if hits:
+                for u in hits:
+                    ok("Crazyflie answered", u)
+                found.extend(hits)
+            else:
+                print(f"  {D}..    {addr:010X}: nothing{X}")
+    finally:
+        try:
+            radio.close()
+        except Exception:
+            pass
+    return found
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        epilog="examples:\n"
+               "  radio_doctor.py --scan              # ids 0-20 + factory + --uri\n"
+               "  radio_doctor.py --scan --ids 3      # just E7E7E7E703\n"
+               "  radio_doctor.py --scan --ids 1-40 --address E7E7E7E7AA",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fix", action="store_true",
                     help="detach kernel drivers and reset the device")
-    ap.add_argument("--uri", default="radio://0/80/2M/E7E7E7E701")
+    ap.add_argument("--uri", default="radio://0/80/2M/E7E7E7E701",
+                    help="the URI you intend to fly with; --scan says whether it answers")
+    ap.add_argument("--scan", action="store_true",
+                    help="scan all channels and rates across a range of addresses "
+                         "to find drones whose address you do not know")
+    ap.add_argument("--ids", default="0-20",
+                    help="with --scan: address suffixes to try, E7E7E7E7<id> "
+                         "(lab drone N is usually id N). Default 0-20")
+    ap.add_argument("--address", action="append", default=[],
+                    help="with --scan: extra full 5-byte hex address; repeatable")
     a = ap.parse_args()
+
+    try:
+        scan_ids = parse_ids(a.ids)
+        extra = [int(x, 16) for x in a.address]
+        want = uri_address(a.uri)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     print("=" * 70)
     print("Crazyradio doctor -- EBUSY / resource-busy diagnosis")
@@ -265,16 +353,26 @@ def main():
         except Exception:
             pass
 
-        import cflib.crtp
-        cflib.crtp.init_drivers(enable_debug_driver=False)
-        found = cflib.crtp.scan_interfaces()
-        if found:
-            for uri, _ in found:
-                ok("Crazyflie answered", uri)
-        else:
-            note("No Crazyflie answered the scan.",
-                 "USB is fine, so this is a radio-link issue: drone powered "
-                 f"on? channel/address matching {a.uri}?")
+        # Scan at the address --uri names, not just the factory default: a
+        # drone given its own address never answers a default-address scan,
+        # so the old scan_interfaces() call here reported "no Crazyflie" for
+        # a drone that was on and in range. --scan does the wide sweep in
+        # section 7, so this stays a quick check of the two likely addresses.
+        if not a.scan:
+            quick = [x for x in (want, FACTORY_ADDR) if x is not None]
+            quick = list(dict.fromkeys(quick))
+            found = wide_scan(quick)
+            hit = [u for u in found if u.upper() == a.uri.upper()]
+            if hit:
+                ok(f"--uri {a.uri} answers -- ready to connect")
+            elif found:
+                issues += 1
+                bad(f"--uri {a.uri} did NOT answer, but the drone above did.",
+                    "Point --uri / your config's uri at it.")
+            else:
+                note("No Crazyflie answered.",
+                     "USB is fine, so this is the radio link: is the drone ON "
+                     "and booted? If its address is unknown, re-run with --scan.")
     except Exception as exc:
         msg = str(exc)
         issues += 1
@@ -292,6 +390,50 @@ def main():
             print(f"        {Y}sudo bash setup_crazyradio_ubuntu.sh{X}")
         else:
             bad(f"open failed: {msg}")
+        radio_ok = False
+    else:
+        radio_ok = True
+
+    if a.scan:
+        head("7. Wide scan")
+        addrs = []
+        for x in ([want] if want is not None else []) + [FACTORY_ADDR] + \
+                [0xE7E7E7E700 | i for i in scan_ids] + extra:
+            if x not in addrs:
+                addrs.append(x)
+        if not radio_ok:
+            note("skipped -- the radio did not open (section 6)")
+        else:
+            print(f"  {D}{len(addrs)} addresses x 126 channels x 3 rates ...{X}")
+            t0 = time.time()
+            try:
+                found = wide_scan(addrs)
+            except Exception as exc:
+                issues += 1
+                msg = str(exc)
+                if "19" in msg or "no such device" in msg.lower():
+                    bad("The radio dropped off USB mid-scan.", msg)
+                    print(f"        {Y}Loose dongle or a weak port: try another "
+                          f"port, ideally not through a hub.{X}")
+                elif "16" in msg or "busy" in msg.lower():
+                    bad("Another process grabbed the radio mid-scan.", msg)
+                else:
+                    bad(f"scan failed: {msg}")
+                found = None
+            if found is not None:
+                print(f"  {D}scan took {time.time() - t0:.1f} s{X}")
+                if not found:
+                    note("Nothing answered at any address.",
+                         "Is the drone ON and booted? If so its address is outside "
+                         "--ids; widen it, or read the address over USB in cfclient.")
+                elif want is not None:
+                    hit = [u for u in found if u.upper() == a.uri.upper()]
+                    if hit:
+                        ok(f"--uri {a.uri} answers")
+                    else:
+                        issues += 1
+                        bad(f"--uri {a.uri} did NOT answer, but the drone(s) above did.",
+                            "Point your config's uri at one of those.")
 
     print("\n" + "=" * 70)
     print(f"{G}No issues found.{X}" if issues == 0
