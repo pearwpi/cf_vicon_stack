@@ -130,6 +130,12 @@ flying, the driver holds the drone where it is; it does not land. (The
 firmware's own watchdog levels the drone after 0.5 s and stops the motors after
 2 s.)
 
+**Rate mode (opt-in, off by default).** `cf1/cmd_rate`
+(`crazyflie_interfaces/RateThrust`: body rates rad/s plus collective thrust N),
+`cf1/imu` and `scripts/calibrate_thrust.py` are described in
+[docs/RATE_MODE.md](docs/RATE_MODE.md). The firmware flight-mode parameters are
+not changed unless you enable it explicitly; read that file first.
+
 ## The safety core
 
 `cf_core.py` holds every limit and check: the flip filter, the flight box, the
@@ -154,11 +160,12 @@ The supervisor's checks, in the order it applies them:
     python3 tests/test_tilt_origin_check.py
     python3 tests/test_flip_guard.py
     python3 tests/test_crazyflie_ros.py
+    python3 tests/test_rate_cmd.py
     python3 -m pytest tests/test_duplicates.py -q
 
 They need no ROS, `cflib` or hardware: the ROS tests stub `rclpy` and the
 messages. Run them one at a time, as separate processes: `test_flip_guard.py`
-replaces the clock for its whole process. The Docker build runs all four and
+replaces the clock for its whole process. The Docker build runs the five script suites and
 stops if any fails.
 
 ## Known limitations
