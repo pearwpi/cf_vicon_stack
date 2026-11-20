@@ -58,10 +58,18 @@ LEASH_M = 0.45             # setpoint may never sit further than this from the d
                            # setpoint runs metres ahead and it LAUNCHES when it breaks
                            # free. Capping commanded error caps achievable acceleration.
 
-# Two-stage geofence, same philosophy as the mocap watchdog: escalate, do not jump
-# straight to cutting motors. A drone 30 cm out at 0.6 m is better landed than dropped.
-GEOFENCE_MARGIN_M = 0.30   # soft bounds + this -> auto-LAND
-GEOFENCE_KILL_M = 0.80     # soft bounds + this -> cut motors
+# Geofence. Two separate boxes:
+#   `bounds` (soft box): any measured position outside it -> auto-LAND.
+#   `walls`  (the real walls, [xmin, xmax, ymin, ymax], Vicon frame): within
+#            WALL_CUT_M of a wall or beyond -> CUT (LAND-then-CUT when high, see
+#            supervise()). If `walls` is not configured the old fallback applies:
+#            GEOFENCE_KILL_M outside `bounds` -> cut.
+GEOFENCE_MARGIN_M = 0.0    # soft bounds + this -> auto-LAND (was 0.30)
+GEOFENCE_KILL_M = 0.80     # FALLBACK only, when walls is not set: bounds + this -> cut
+WALL_CUT_M = 0.10          # within this of a real wall (or beyond) -> wall zone
+HIGH_Z_M = 2.0             # wall zone above this height: LAND first, CUT on timeout
+HIGH_LAND_TIMEOUT_S = 1.0  # ...still in the wall zone this long after the LAND -> CUT
+FLOOR_CUT_M = 0.10         # z below this while FLYING (not TAKEOFF/LANDING) -> CUT
 
 # Auto-centred on the drone at startup: a fixed box around the Vicon origin is wrong
 # whenever that origin sits in a corner of the capture space, which would put a
@@ -345,13 +353,17 @@ class SuperviseResult:
     mocap_stale: bool = False
     stale_since: float | None = None
     diverge_since: float | None = None
+    wall_since: float | None = None  # when a high-altitude wall-zone episode began
     became_stale: bool = False       # first tick of a stale episode, for logging
 
 
 def supervise(*, now, flying, pose_age, quat_age, pos_only,
               pos, ekf, got_state, vbat, bounds,
               stale_since, diverge_since, yaw_rejects=0,
-              cmd_age=None, command_timeout=None):
+              cmd_age=None, command_timeout=None,
+              state=None, walls=None, wall_since=None,
+              wall_cut_m=WALL_CUT_M, high_z_m=HIGH_Z_M,
+              high_land_timeout_s=HIGH_LAND_TIMEOUT_S, floor_cut_m=FLOOR_CUT_M):
     """One tick of the safety supervisor. Pure: no clocks, no printing.
 
     Explicit severity ("kill" vs "land") rather than the caller substring-
@@ -359,8 +371,14 @@ def supervise(*, now, flying, pose_age, quat_age, pos_only,
     motor-cut to a landing. Watchdog state is passed in and handed back on the
     result. pos and ekf are (x, y, z) or None. Ordered by severity; each stage
     escalates rather than jumping straight to cutting motors.
+
+    Geofence inputs (all optional so older callers are unchanged): `state` is a
+    State value (the floor cut needs to tell FLYING from TAKEOFF/LANDING; None
+    disables it), `walls` is (xmin, xmax, ymin, ymax) or None, `wall_since` is
+    the watchdog state handed back as result.wall_since. z is real Vicon height.
     """
-    r = SuperviseResult(stale_since=stale_since, diverge_since=diverge_since)
+    r = SuperviseResult(stale_since=stale_since, diverge_since=diverge_since,
+                        wall_since=wall_since)
 
     # --- mocap staleness, two stages -----------------------------------------
     #   STALE (>150 ms): the EKF is dead-reckoning on the IMU. Survivable for a
@@ -397,6 +415,48 @@ def supervise(*, now, flying, pose_age, quat_age, pos_only,
                     f"ambiguous")
         return r
 
+    # --- wall / floor CUT rules (before every LAND rule below) ----------------
+    if pos is not None and flying:
+        x, y, z = pos
+        where = f"({x:+.2f},{y:+.2f},{z:+.2f})"
+        if walls is None:
+            # Not configured: keep the old wide kill margin rather than no cut.
+            if bounds.outside_kill(x, y, z):
+                r.action = "kill"
+                r.reason = (f"GEOFENCE: {where} is >{GEOFENCE_KILL_M:.2f} m outside "
+                            f"{bounds.describe()}")
+                return r
+        else:
+            wxmin, wxmax, wymin, wymax = walls
+            in_zone = (x <= wxmin + wall_cut_m or x >= wxmax - wall_cut_m or
+                       y <= wymin + wall_cut_m or y >= wymax - wall_cut_m)
+            if not in_zone:
+                r.wall_since = None
+            elif z <= high_z_m:
+                r.action = "kill"
+                r.reason = (f"WALL ZONE: {where} within {wall_cut_m:.2f} m of a wall "
+                            f"(walls x[{wxmin:+.2f},{wxmax:+.2f}] "
+                            f"y[{wymin:+.2f},{wymax:+.2f}])")
+                return r
+            else:
+                # High up: land first (a cut from here is a long fall), but a
+                # drone that stays in the zone, or comes down into the cut
+                # height while still in it, is cut.
+                if wall_since is None:
+                    r.wall_since = now
+                elif now - wall_since >= high_land_timeout_s:
+                    r.action = "kill"
+                    r.reason = (f"WALL ZONE: {where} still in the wall zone "
+                                f"{now - wall_since:.1f} s after landing began")
+                    return r
+                r.action = "land"
+                r.reason = f"WALL ZONE (high, z>{high_z_m:.2f}): {where} -- landing"
+                return r
+        if state == State.FLYING and z < floor_cut_m:
+            r.action = "kill"
+            r.reason = f"FLOOR: z={z:+.2f} m below {floor_cut_m:.2f} m while FLYING"
+            return r
+
     # --- EKF vs Vicon divergence ---------------------------------------------
     if pos is not None and ekf is not None and got_state:
         err = math.dist(ekf, pos)
@@ -410,18 +470,13 @@ def supervise(*, now, flying, pose_age, quat_age, pos_only,
         else:
             r.diverge_since = None
 
-    # --- geofence, two stages -------------------------------------------------
+    # --- outside the soft box -> LAND ----------------------------------------
     if pos is not None and flying:
         x, y, z = pos
-        where = f"({x:+.2f},{y:+.2f},{z:+.2f})"
-        if bounds.outside_kill(x, y, z):
-            r.action = "kill"
-            r.reason = (f"GEOFENCE: {where} is >{GEOFENCE_KILL_M:.2f} m outside "
-                        f"{bounds.describe()}")
-            return r
         if bounds.outside_hard(x, y, z):
             r.action = "land"
-            r.reason = f"GEOFENCE: {where} outside {bounds.describe()}"
+            r.reason = (f"GEOFENCE: ({x:+.2f},{y:+.2f},{z:+.2f}) outside "
+                        f"{bounds.describe()}")
             return r
 
     # --- battery --------------------------------------------------------------

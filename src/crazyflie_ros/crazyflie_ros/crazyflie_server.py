@@ -175,6 +175,23 @@ class CrazyflieServer(Node):
         # rejected at startup with "expecting type BYTE_ARRAY" -- the node
         # dies before it ever reads the geofence it was handed.
         bounds_p = list(d("bounds", Parameter.Type.DOUBLE_ARRAY).value or [])
+        # Real walls [xmin, xmax, ymin, ymax] (Vicon frame), separate from the
+        # soft `bounds`. Unset -> supervise() falls back to the old 0.80 m kill
+        # margin outside bounds. See docs/RATE_MODE.md "Geofence".
+        walls_p = list(d("walls", Parameter.Type.DOUBLE_ARRAY).value or [])
+        self.walls = tuple(float(v) for v in walls_p) if len(walls_p) == 4 else None
+        if walls_p and self.walls is None:
+            self.get_logger().error(
+                f"walls must be [xmin, xmax, ymin, ymax], got {walls_p}: ignored")
+        if self.walls is None:
+            self.get_logger().warn(
+                f"`walls` not configured: wall cut falls back to "
+                f"{C.GEOFENCE_KILL_M:.2f} m outside `bounds`")
+        self.wall_cut_m = float(d("wall_cut_m", C.WALL_CUT_M).value)
+        self.high_z_m = float(d("high_z_m", C.HIGH_Z_M).value)
+        self.high_land_timeout_s = float(
+            d("high_land_timeout_s", C.HIGH_LAND_TIMEOUT_S).value)
+        self.floor_cut_m = float(d("floor_cut_m", C.FLOOR_CUT_M).value)
 
         # ---- body-rate path (docs/RATE_MODE.md). Both switches default OFF:
         # enable_rate_cmd lets cmd_rate be accepted at all; rate_mode_setup
@@ -247,6 +264,7 @@ class CrazyflieServer(Node):
         self.bounds = (C.Bounds(*bounds_p) if len(bounds_p) == 6 else None)
         self._stale_since = None
         self._diverge_since = None
+        self._wall_since = None
         self._mocap_stale = False
         self._hold = None              # (x, y, z, yaw_deg) frozen setpoint
         self._takeoff_target = None
@@ -1052,10 +1070,15 @@ class CrazyflieServer(Node):
             bounds=self.bounds,
             stale_since=self._stale_since, diverge_since=self._diverge_since,
             yaw_rejects=self._yaw_rejects,
-            cmd_age=cmd_age, command_timeout=self.command_timeout)
+            cmd_age=cmd_age, command_timeout=self.command_timeout,
+            state=self.state, walls=self.walls, wall_since=self._wall_since,
+            wall_cut_m=self.wall_cut_m, high_z_m=self.high_z_m,
+            high_land_timeout_s=self.high_land_timeout_s,
+            floor_cut_m=self.floor_cut_m)
 
         self._stale_since = r.stale_since
         self._diverge_since = r.diverge_since
+        self._wall_since = r.wall_since
         self._mocap_stale = r.mocap_stale
         if r.became_stale and flying:
             self.get_logger().warn(

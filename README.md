@@ -148,11 +148,19 @@ The supervisor's checks, in the order it applies them:
 |---|---|
 | no Vicon pose for 0.40 s | cut the motors |
 | Vicon orientation unusable for 0.50 s | land |
-| no command for 0.30 s | hold position |
 | onboard estimate over 0.35 m from Vicon for 0.30 s | land |
-| more than 0.80 m outside the flight box | cut the motors |
-| more than 0.30 m outside the flight box | land |
+| within `wall_cut_m` (0.10 m) of a real wall (`walls`), z <= 2.0 m | cut the motors |
+| same, z > 2.0 m | land; cut after 1.0 s still in the zone, or once z <= 2.0 m |
+| z < 0.10 m while FLYING (not TAKEOFF/LANDING) | cut the motors |
+| outside the flight box (`bounds`) at all | land |
+| onboard estimate over 0.35 m from Vicon for 0.30 s | land |
 | battery below 3.20 V | land |
+| no command for 0.30 s | hold position |
+
+(The list above is the order of severity; in code the two cuts run before every
+land, and the command-timeout hold runs last.) `walls` is separate from
+`bounds`; if it is not set the old rule (cut 0.80 m outside `bounds`) applies
+and a warning is logged. The shipped `walls` in `crazyflie.yaml` is provisional.
 
 ## Tests
 

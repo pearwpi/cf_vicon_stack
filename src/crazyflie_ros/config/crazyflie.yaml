@@ -42,6 +42,17 @@
     # Measure your own room; do not inherit these.
     bounds: [-0.50, 5.25, -1.20, 1.20, 0.00, 1.80]
 
+    # walls: [xmin, xmax, ymin, ymax] -- the REAL walls, Vicon frame. PROVISIONAL,
+    # not measured: replace before flying. Within wall_cut_m of a wall -> motors
+    # cut (z <= high_z_m) or land-then-cut (z > high_z_m, after
+    # high_land_timeout_s). Outside `bounds` is a LAND. Unset -> old 0.80 m kill
+    # margin outside bounds. floor_cut_m: z below this while FLYING -> cut.
+    walls: [-1.69, 6.26, -1.85, 2.15]
+    wall_cut_m: 0.10
+    high_z_m: 2.0
+    high_land_timeout_s: 1.0
+    floor_cut_m: 0.10
+
     # ---- IMU stream -> <prefix>/imu (sensor_msgs/Imu, body FLU, rad/s, m/s^2)
     enable_imu_log: true      # one 24-byte log packet per sample
     imu_log_hz: 100.0         # rounded to a 10 ms multiple; 100 is the max

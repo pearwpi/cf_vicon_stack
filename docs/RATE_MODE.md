@@ -135,6 +135,11 @@ waiting in the tick; it only reads the cache and queues writes).
 - Stale command (no message for `command_timeout`, 0.30 s): HOLD position.
   The supervisor evaluates geofence, EKF mismatch and battery BEFORE this hold,
   so a policy outage never masks them (fence -> land/kill, battery -> land).
+- Geofence: outside `bounds` at all -> LAND. Within `wall_cut_m` (0.10 m) of a
+  real wall (`walls`, separate from `bounds`) -> CUT at z <= `high_z_m` (2.0 m);
+  above it LAND, then CUT after `high_land_timeout_s` (1.0 s) in the zone or as
+  soon as z <= `high_z_m`. z < `floor_cut_m` (0.10 m) while FLYING -> CUT (not in
+  TAKEOFF/LANDING). No `walls`: old 0.80 m kill margin outside `bounds`.
 - Attitude: every rate packet needs a fresh (<= `rate_att_max_age_s`, 0.10 s)
   VALID attitude: the last Vicon quaternion the flip filter accepted and/or the
   onboard roll/pitch (`imu_log_attitude`). A stale mocap pose (> 150 ms), no
