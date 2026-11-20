@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VelocityWorld.msg"
   "msg/Status.msg"
   "msg/LogDataGeneric.msg"
+  "msg/RateThrust.msg"
   "srv/Takeoff.srv"
   "srv/Land.srv"
   "srv/GoTo.srv"
