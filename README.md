@@ -161,6 +161,7 @@ The supervisor's checks, in the order it applies them:
     python3 tests/test_flip_guard.py
     python3 tests/test_crazyflie_ros.py
     python3 tests/test_rate_cmd.py
+    python3 tests/test_calibrate_thrust.py
     python3 -m pytest tests/test_duplicates.py -q
 
 They need no ROS, `cflib` or hardware: the ROS tests stub `rclpy` and the

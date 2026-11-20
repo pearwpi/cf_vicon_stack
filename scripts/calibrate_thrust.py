@@ -48,13 +48,72 @@ except ImportError:                       # run from a source checkout
 POLYS = {"linear": R.FW_LINEAR_POLY, "foerster": R.FOERSTER_POLY}
 
 
-def summarise(rows, mass, poly):
+MIN_SAMPLES = 20            # 15 s at 10 Hz is ~150; fewer than this is not a hover
+MAX_BAD_FRACTION = 0.10
+VBAT_RANGE = (3.0, 4.5)     # V; anything else is a dead/garbled log, not a battery
+ALT_TOL_M = 0.10            # hover must stay this close to the commanded height
+ALT_SPREAD_M = 0.10         # ...and not wander more than this inside the window
+
+
+def clean_samples(rows, vbat_required=True):
+    """Drop non-finite or out-of-range (t, thrust_word, vbat) samples.
+    Returns (good_rows, n_bad). The thrust word must be in (0, 65535]."""
+    good = []
+    for t, u, v in rows:
+        if not (math.isfinite(t) and math.isfinite(u) and 0.0 < u <= 65535.0):
+            continue
+        if vbat_required and not (math.isfinite(v)
+                                  and VBAT_RANGE[0] <= v <= VBAT_RANGE[1]):
+            continue
+        good.append((t, u, v))
+    return good, len(rows) - len(good)
+
+
+def capture_problems(poses, statuses, height, tol=ALT_TOL_M, spread=ALT_SPREAD_M):
+    """Why a hover capture window cannot be trusted ([] if it can).
+
+    poses: [z] onboard-estimate altitudes sampled during the window;
+    statuses: [(is_flying, is_tumbled)] likewise."""
+    why = []
+    if len(poses) < 5:
+        why.append(f"only {len(poses)} altitude samples during capture")
+    else:
+        if not all(math.isfinite(z) for z in poses):
+            why.append("non-finite altitude sample")
+        else:
+            if max(abs(z - height) for z in poses) > tol:
+                why.append(f"altitude left {height:.2f} +/- {tol:.2f} m "
+                           f"(saw {min(poses):.2f}..{max(poses):.2f})")
+            if max(poses) - min(poses) > spread:
+                why.append(f"altitude not stable (spread "
+                           f"{max(poses) - min(poses):.2f} m)")
+    if not statuses:
+        why.append("no driver status during capture")
+    else:
+        if not all(f for f, _ in statuses):
+            why.append("driver reported not-flying during capture")
+        if any(t for _, t in statuses):
+            why.append("driver reported tumbled during capture")
+    return why
+
+
+def summarise(rows, mass, poly, vbat_required=True):
     """rows: [(t, thrust_word, vbat)] captured while hovering."""
-    us = [u for _, u, _ in rows if u > 0]
-    vs = [v for _, _, v in rows if v > 0]
+    total = len(rows)
+    rows, bad = clean_samples(rows, vbat_required)
+    if vbat_required and (len(rows) < MIN_SAMPLES
+                          or bad > MAX_BAD_FRACTION * total):
+        raise SystemExit(f"REFUSED: {len(rows)} usable of {total} samples "
+                         f"({bad} non-finite/out-of-range) -- not a trustworthy "
+                         "capture")
+    us = [u for _, u, _ in rows]
+    vs = [v for _, _, v in rows if math.isfinite(v) and v > 0]
     hover = R.robust_hover(us)
     if hover is None:
-        raise SystemExit("no non-zero thrust samples -- was the drone flying?")
+        raise SystemExit("no usable thrust samples -- was the drone flying?")
+    if vbat_required and not (10001 <= hover <= 55000):
+        raise SystemExit(f"REFUSED: hover word {hover:.0f} is outside the "
+                         "10001..55000 thrust range the driver can send")
     out = {
         "n": len(us), "hover_pwm": hover,
         "hover_pwm_min": min(us), "hover_pwm_max": max(us),
@@ -125,7 +184,8 @@ def run_ros(args, poly):
     import rclpy
     from rclpy.node import Node
     from rcl_interfaces.srv import GetParameters
-    from crazyflie_interfaces.msg import LogDataGeneric
+    from crazyflie_interfaces.msg import LogDataGeneric, Status
+    from geometry_msgs.msg import PoseStamped
     from crazyflie_interfaces.srv import Land, Takeoff
 
     rclpy.init()
@@ -137,6 +197,16 @@ def run_ros(args, poly):
         lambda m: rows.append((time.time(), float(m.values[0]),
                                float(m.values[1]))) if len(m.values) >= 2 else None,
         10)
+    poses, stats = [], []            # (t, z) / (t, is_flying, is_tumbled)
+    node.create_subscription(
+        PoseStamped, f"{p}/pose",
+        lambda m: poses.append((time.time(), float(m.pose.position.z))), 10)
+    node.create_subscription(
+        Status, f"{p}/status",
+        lambda m: stats.append((
+            time.time(),
+            bool(m.supervisor_info & Status.SUPERVISOR_INFO_IS_FLYING),
+            bool(m.supervisor_info & Status.SUPERVISOR_INFO_IS_TUMBLED))), 10)
     cli_takeoff = node.create_client(Takeoff, f"{p}/takeoff")
     cli_land = node.create_client(Land, f"{p}/land")
     cli_par = node.create_client(GetParameters, f"{args.server}/get_parameters")
@@ -189,15 +259,29 @@ def run_ros(args, poly):
         rows.clear()
         treq = Takeoff.Request()
         treq.height = float(args.height)
-        call(cli_takeoff, treq, "takeoff")
+        # Takeoff is potentially ACTIVE from the moment the request leaves: a
+        # timeout, exception or Ctrl-C anywhere after this must still land.
         landed = False
+        call(cli_takeoff, treq, "takeoff")
         climb = args.height / 0.35 + 1.0            # cf_core.TAKEOFF_CLIMB_MS
         print(f"climbing ({climb:.1f} s), settling {args.settle:.1f} s ...")
         spin_for(climb + args.settle)
+        # Settled? Must be flying and at the commanded height BEFORE recording.
+        pre = capture_problems([z for _, z in poses[-10:]],
+                               [(f, t) for _, f, t in stats[-5:]], args.height)
+        if pre:
+            raise SystemExit("REFUSED: not in a steady hover after settling: "
+                             + "; ".join(pre))
         rows.clear()
+        t0 = time.time()
         print(f"recording {args.duration:.0f} s of hover ...")
         spin_for(args.duration)
         captured = list(rows)
+        bad = capture_problems([z for t, z in poses if t >= t0],
+                               [(f, tm) for t, f, tm in stats if t >= t0],
+                               args.height)
+        if bad:
+            raise SystemExit("REFUSED: capture discarded: " + "; ".join(bad))
         return captured
     finally:
         if not landed:
@@ -236,6 +320,14 @@ def main(argv=None):
 
     if not args.dry_run and not args.offline and not args.mass:
         ap.error("--mass is required to fly")
+    if args.mass is not None and not (math.isfinite(args.mass)
+                                      and 0.005 <= args.mass <= 0.2):
+        ap.error("--mass must be a finite value in 0.005..0.2 kg")
+    if not (math.isfinite(args.height) and 0.1 <= args.height <= 1.5):
+        ap.error("--height must be a finite value in 0.1..1.5 m")
+    for nm in ("settle", "duration"):
+        if not (math.isfinite(getattr(args, nm)) and getattr(args, nm) > 0):
+            ap.error(f"--{nm} must be finite and > 0")
 
     if args.offline:
         with open(args.offline) as fh:
@@ -253,7 +345,8 @@ def main(argv=None):
         return 0
     if not args.mass:
         ap.error("--mass is required to fit")
-    res = summarise(rows, args.mass, poly)
+    res = summarise(rows, args.mass, poly,
+                    vbat_required=not (args.dry_run and args.hover_pwm))
     report(res)
     write_outputs(args, rows, res, poly)
     return 0

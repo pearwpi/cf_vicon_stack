@@ -123,7 +123,7 @@ COPY . ${CFV_ROOT}/
 RUN cd ${CFV_ROOT} \
     && for t in tests/test_frame_check.py tests/test_tilt_origin_check.py \
                 tests/test_flip_guard.py tests/test_crazyflie_ros.py \
-                tests/test_rate_cmd.py; do \
+                tests/test_rate_cmd.py tests/test_calibrate_thrust.py; do \
          echo "--- $t"; \
          python3 "$t" > /tmp/out 2>&1 \
            || { tail -30 /tmp/out; echo "*** $t FAILED -- aborting build"; exit 1; }; \

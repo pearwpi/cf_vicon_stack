@@ -161,7 +161,13 @@ never be proven and rate flight is refused (fail safe).
 to run if `enable_rate_cmd` or `rate_mode_setup` is true), records
 `stabilizer.thrust` and battery voltage, estimates the hover word with a
 trimmed mean, and writes a YAML (`thrust_poly`, `thrust_scale`) that you pass to
-the driver as a second `--params-file`. Weigh the drone as flown.
+the driver as a second `--params-file`. Weigh the drone as flown. The script marks takeoff
+as potentially active BEFORE sending the request (any exception or Ctrl-C
+afterwards lands), requires a flying, steady altitude (+/-0.10 m of the target,
+spread <= 0.10 m, not tumbled) before and during the capture, drops non-finite
+or out-of-range samples (thrust word outside 0..65535, battery outside
+3.0..4.5 V) and refuses the fit if fewer than 20 samples survive, more than
+10% were bad, or the hover word is outside 10001..55000.
 
     python3 scripts/calibrate_thrust.py --dry-run                      # on the ground, no takeoff
     python3 scripts/calibrate_thrust.py --dry-run --no-ros --hover-pwm 38000 --mass 0.034 --out cal.yaml
@@ -170,7 +176,7 @@ the driver as a second `--params-file`. Weigh the drone as flown.
 
 ## Bring-up checklist (props OFF first)
 
-1. Run the five test suites (README, Tests).
+1. Run the test suites (README, Tests).
 2. Driver defaults: confirm `cmd_rate` is refused (warning) and flightmode is
    unchanged (`ros2 param`/cfclient shows stabModeRoll/Pitch = 1).
 3. Props off: check `cf1/imu` rate (about `imu_log_hz`) and sign of each gyro
