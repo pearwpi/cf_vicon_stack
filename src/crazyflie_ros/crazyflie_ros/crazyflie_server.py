@@ -242,7 +242,17 @@ class CrazyflieServer(Node):
         self._hold = None              # (x, y, z, yaw_deg) frozen setpoint
         self._takeoff_target = None
         self._armed = False
-        self._fm_written = False       # WE set stabModeRoll/Pitch=0 and owe a revert
+        # Firmware flight-mode bookkeeping, PER PARAM (see _service_flightmode):
+        self._fm_target = {}           # name -> value we are driving it to; an
+                                       # entry exists until the firmware ACKs default
+        self._fm_wt = {}               # name -> time of our last write attempt
+        self._fm_seen = {}             # name -> time the firmware last reported it
+        self._fm_refresh_t = 0.0
+        self.fm_shutdown_timeout = 1.5  # s to wait for restore acks at shutdown
+        self._link_lost = False
+        self._unlock_t = None          # zero-thrust unlock sent this ground->takeoff
+        self._last_tx_t = 0.0          # last setpoint actually sent
+        self._rate_why = ""
         self._rate_active = False      # firmware-confirmed rate mode, refreshed per tick
         self._warn_t = {}              # throttled-warning timestamps
 
@@ -465,6 +475,8 @@ class CrazyflieServer(Node):
             self._logs.append(lgt)
         except Exception as exc:
             self.get_logger().warn(f"thrust log failed to start: {exc}")
+        self._link_lost = False
+        self._wire_cf_callbacks()
         self._check_flightmode_at_connect()
         self._start_extpose()
         return True
@@ -541,50 +553,227 @@ class CrazyflieServer(Node):
     # -------------------------------------------------------------------------
     # Firmware flight mode (RPYT commander). See docs/RATE_MODE.md.
     # -------------------------------------------------------------------------
-    def _read_flightmode(self):
-        """Firmware-ACKNOWLEDGED values, from cflib's param cache. A write is
-        only reflected here once the Crazyflie echoes it, so this is the
-        firmware's word, not our intent. Unreadable -> None (= not rate)."""
-        out = {}
-        for n in R.FLIGHTMODE_CHECK:
+    def _wire_cf_callbacks(self):
+        """Param-update and link-loss hooks. Separate from connect() so tests
+        can wire a fake link. Missing hooks degrade to REFUSING rate flight
+        (freshness can never be proven), never to trusting the cache."""
+        add = getattr(getattr(self.cf, "param", None), "add_update_callback", None)
+        if add is not None:
             try:
-                out[n] = int(float(self.cf.param.get_value(n)))
-            except Exception:
-                out[n] = None
-        return out
+                add(group="flightmode", cb=self._on_fm_param)
+            except Exception as exc:
+                self.get_logger().warn(f"param update callback failed: {exc}")
+        for attr in ("connection_lost", "disconnected"):
+            c = getattr(self.cf, attr, None)
+            if c is not None and hasattr(c, "add_callback"):
+                c.add_callback(self._on_link_lost)
+
+    def _on_fm_param(self, name, value):
+        # cflib RX thread: the firmware just reported this param (write echo
+        # or readback). Only the TIME is kept; the value is read from the cache.
+        self._fm_seen[name] = time.time()
+
+    def _on_link_lost(self, *a):
+        """cflib thread. The radio is gone: nothing we believed about the
+        firmware (mode, unlock, buffered command) is still true."""
+        self._link_lost = True
+        self._cmd = None
+        self._unlock_t = None
+        self._hold = None
+        self._rate_active = False
+        self._rate_att_ok = False
+        self.state = C.State.STOPPED
+        self.get_logger().fatal(
+            "RADIO LINK LOST -- command buffer cleared, state STOPPED. The "
+            "firmware flight mode is UNKNOWN until reconnect.")
+
+    def _invalidate_rate_cmd(self):
+        if self._cmd is not None and self._cmd[0] == "rate":
+            self._cmd = None
+        self._rate_active = False
+        self._rate_att_ok = False
+
+    def _fm_value(self, n, max_age=None, now=None):
+        """Cached firmware value, or None. With max_age, the firmware must
+        also have REPORTED it that recently (a cache entry alone proves nothing
+        about what another client may have written since)."""
+        try:
+            v = int(float(self.cf.param.get_value(n)))
+        except Exception:
+            return None
+        if max_age is not None:
+            t = self._fm_seen.get(n)
+            if t is None or (now if now is not None else time.time()) - t > max_age:
+                return None
+        return v
+
+    def _read_flightmode(self, names=R.FLIGHTMODE_CHECK, max_age=None, now=None):
+        return {n: self._fm_value(n, max_age, now) for n in names}
+
+    def _fm_acked(self, n):
+        """Value the firmware reported AFTER our last write of n, else None."""
+        v = self._fm_value(n)
+        if v is None:
+            return None
+        if n in self._fm_wt and self._fm_seen.get(n, -1.0) < self._fm_wt[n]:
+            return None
+        return v
+
+    def _fm_write(self, n):
+        """One non-blocking write toward _fm_target[n]. A failure keeps the
+        target, so the per-tick service retries it."""
+        t = self._fm_target[n]
+        self._fm_wt[n] = time.time()
+        try:
+            self.cf.param.set_value(n, str(t))
+            return True
+        except Exception as exc:
+            self.get_logger().error(f"could not set {n}={t}: {exc}")
+            return False
 
     def _set_flightmode(self, mode):
-        """Write stabModeRoll/Pitch. mode is R.RATE or R.ANGLE. Non-blocking:
-        confirmation arrives asynchronously and is read by _read_flightmode."""
+        """Drive stabModeRoll/Pitch to `mode`. Non-blocking. The restore debt
+        is recorded BEFORE the write, so a write that throws or never arrives
+        still leaves us owing a revert."""
         for n in R.FLIGHTMODE_WRITE:
-            try:
-                self.cf.param.set_value(n, str(mode))
-            except Exception as exc:
-                self.get_logger().error(f"could not set {n}={mode}: {exc}")
-        self._fm_written = (mode == R.RATE)
+            self._fm_target[n] = mode
+            self._fm_write(n)
+
+    def _service_flightmode(self, now):
+        """Per tick, NO waiting: clear satisfied restore debts (firmware
+        acknowledged the default after our write) and re-issue writes that
+        were not acknowledged."""
+        if self.cf is None:
+            return
+        for n, t in list(self._fm_target.items()):
+            a = self._fm_acked(n)
+            if a == t == R.FLIGHTMODE_DEFAULT[n]:
+                del self._fm_target[n]
+                self._fm_wt.pop(n, None)
+                continue
+            if a != t and now - self._fm_wt.get(n, 0.0) > R.FM_RETRY_S:
+                self._warn_throttled(
+                    f"fm_retry_{n}", f"{n}: firmware has not confirmed {t} "
+                    f"(last report {a}); rewriting", 2.0)
+                self._fm_write(n)
+                self._request_param(n)
+
+    def _request_param(self, n):
+        try:
+            self.cf.param.request_param_update(n)
+        except Exception:
+            pass
+
+    def _refresh_params(self, now):
+        """Async readbacks while the rate path is live, so freshness is real."""
+        if not (self.enable_rate_cmd and self.rate_mode_setup):
+            return
+        if self.state not in C.State.FLYING_STATES:
+            return
+        if now - self._fm_refresh_t < R.PARAM_REFRESH_S:
+            return
+        self._fm_refresh_t = now
+        for n in R.FLIGHTMODE_CHECK + R.DECODER_PARAMS:
+            self._request_param(n)
+
+    def _fm_uncertain(self):
+        """Reason the firmware mode state cannot be trusted, or None. Arming
+        is refused while this is set."""
+        self._service_flightmode(time.time())
+        if self._link_lost:
+            return "radio link was lost; firmware mode unknown"
+        if self._fm_target:
+            return ("flight-mode write/restore not yet acknowledged by the "
+                    f"firmware: {sorted(self._fm_target)}")
+        if self.enable_rate_cmd:
+            fm = self._read_flightmode()
+            bad = {n: v for n, v in fm.items()
+                   if v != R.FLIGHTMODE_DEFAULT[n]}
+            if bad:
+                return f"flight mode not confirmed at defaults: {bad}"
+        return None
 
     def _revert_flightmode(self, why):
-        """Put roll/pitch back to ANGLE if, and only if, this node changed them."""
-        if not self._fm_written or self.cf is None:
-            return
-        self._set_flightmode(R.ANGLE)
+        """Drive every param we (or a stale session) left non-default back to
+        its default. Acknowledgment is tracked per param in _fm_target and
+        checked by _service_flightmode / _flush_flightmode, not assumed."""
         self._rate_active = False
-        self.get_logger().info(f"flightmode.stabModeRoll/Pitch restored to 1 "
-                               f"(angle) on {why}")
+        if self.cf is None or not self._fm_target:
+            return
+        for n in list(self._fm_target):
+            self._fm_target[n] = R.FLIGHTMODE_DEFAULT[n]
+            self._fm_write(n)
+        self.get_logger().info(f"flight mode restore requested on {why}: "
+                               f"{sorted(self._fm_target)} (unconfirmed until "
+                               "the firmware acknowledges each)")
+
+    def _flush_flightmode(self, timeout):
+        """Shutdown only (never the control tick): wait, bounded, for every
+        restore to be acknowledged, retrying. Says so LOUDLY if it is not."""
+        if self._link_lost:
+            if self._fm_target:
+                self.get_logger().error(
+                    "link lost: flight-mode restore CANNOT be confirmed "
+                    f"({sorted(self._fm_target)}); power-cycle the drone or "
+                    "reconnect before flying anything else")
+            return
+        end = time.time() + timeout
+        while True:
+            self._service_flightmode(time.time())
+            if not self._fm_target:
+                return
+            if time.time() >= end:
+                self.get_logger().error(
+                    "flight-mode restore NOT confirmed by the firmware for "
+                    f"{sorted(self._fm_target)} -- power-cycle the drone "
+                    "before the next flight")
+                return
+            time.sleep(0.05)
 
     def _check_flightmode_at_connect(self):
+        """Firmware params live in RAM: an earlier session that lost its link
+        mid-rate-flight leaves them non-default until a reboot (the teleop's
+        ATTITUDE mode would then read its angles as RATES). ANY non-default
+        combination is restored -- including mixed roll/pitch and rate with an
+        unexpected yaw mode -- and tracked until the firmware acknowledges."""
         fm = self._read_flightmode()
-        if R.rate_mode_confirmed(fm) and not self.rate_mode_setup:
-            # Firmware params live in RAM: an earlier session that lost its link
-            # mid-rate-flight leaves them at 0 until a reboot. The standalone
-            # teleop's ATTITUDE mode would then read its angles as RATES.
+        bad = [n for n, v in fm.items()
+               if v is not None and v != R.FLIGHTMODE_DEFAULT[n]]
+        unreadable = [n for n, v in fm.items() if v is None]
+        if unreadable:
+            self.get_logger().warn(
+                f"flight mode params unreadable: {unreadable} (rate flight "
+                "will be refused)")
+        if bad:
             self.get_logger().error(
-                "firmware is in RATE mode on roll/pitch but rate_mode_setup is "
-                "false -- restoring the default (1 = angle).")
-            self._fm_written = True
-            self._revert_flightmode("connect")
+                f"firmware flight mode is non-default {fm} -- restoring "
+                "defaults (stabModeRoll/Pitch=1, stabModeYaw=0).")
+            for n in bad:
+                self._fm_target[n] = R.FLIGHTMODE_DEFAULT[n]
+                self._fm_write(n)
         else:
             self.get_logger().info(f"firmware flight mode: {fm}")
+
+    def _rate_ready(self, now):
+        """Everything that must be true before a rate setpoint may leave.
+        Returns (ok, why). All evidence is age-gated: cached values do not
+        prove the decoder configuration or thrust unlock.
+        """
+        age = R.PARAM_MAX_AGE_S
+        fm = self._read_flightmode(R.FLIGHTMODE_CHECK, age, now)
+        if not R.rate_mode_confirmed(fm):
+            return False, f"stabMode not freshly confirmed rate: {fm}"
+        dec = self._read_flightmode(R.DECODER_PARAMS, age, now)
+        if not R.decoder_config_ok(dec):
+            return False, (f"legacy decoder params not freshly verified 0 "
+                           f"(missing from TOC counts as not verified): {dec}")
+        if not self._unlock_valid(now):
+            return False, "thrust unlock not sent since entering the ground state"
+        return True, ""
+
+    def _unlock_valid(self, now):
+        return (self._unlock_t is not None
+                and now - self._last_tx_t <= R.UNLOCK_TX_GAP_S)
 
     def _on_state(self, ts, data, cfg):
         with self._tlm_lock:
@@ -819,6 +1008,9 @@ class CrazyflieServer(Node):
         if self.cf is None:
             return
 
+        self._service_flightmode(now)
+        self._refresh_params(now)
+
         # Reset the EKF once, after extpose has actually been going out for a
         # second. Earlier than that and it resets onto an empty link.
         if (not self._est_ready and self._est_thread is None
@@ -861,7 +1053,10 @@ class CrazyflieServer(Node):
                 f"mocap stale ({self.pose_age()*1000:.0f} ms) -- setpoint frozen")
 
         if self.enable_rate_cmd and self.rate_mode_setup:
-            self._rate_active = R.rate_mode_confirmed(self._read_flightmode())
+            self._rate_active, self._rate_why = self._rate_ready(now)
+            if flying and not self._rate_active:
+                self._warn_throttled("rate_not_ready",
+                                     f"rate handoff refused: {self._rate_why}")
 
         if r.action == "kill":
             self.emergency(r.reason)
@@ -942,14 +1137,18 @@ class CrazyflieServer(Node):
                         self._send_position(*self._hold, p)
                     return
                 self.cf.commander.send_setpoint(*a)
+                self._last_tx_t = time.time()
             elif kind == "position":
                 self._send_position(a[0], a[1], a[2], a[3], p)
             elif kind == "hover":
                 self.cf.commander.send_hover_setpoint(*a)
+                self._last_tx_t = time.time()
             elif kind == "velocity_world":
                 self.cf.commander.send_velocity_world_setpoint(*a)
+                self._last_tx_t = time.time()
             elif kind == "full_state":
                 self.cf.commander.send_full_state_setpoint(*a)
+                self._last_tx_t = time.time()
         except Exception as exc:
             self.get_logger().error(f"setpoint send failed: {exc}")
 
@@ -971,6 +1170,7 @@ class CrazyflieServer(Node):
             x, y, z = C.apply_leash(x, y, z, p.x, p.y, p.z)
         self.cf.commander.send_position_setpoint(x, y, z,
                                                  self.yaw_sign * yaw_deg)
+        self._last_tx_t = time.time()
 
     # =========================================================================
     # FLIGHT STATE
@@ -1007,6 +1207,10 @@ class CrazyflieServer(Node):
             why = ("emergency latched; call reset_emergency first"
                    if self.state == C.State.STOPPED else
                    f"state is {self.state}, not IDLE")
+            self.get_logger().error(f"takeoff refused: {why}")
+            return False
+        why = self._fm_uncertain()
+        if why:
             self.get_logger().error(f"takeoff refused: {why}")
             return False
         if self.no_fly:
@@ -1061,6 +1265,8 @@ class CrazyflieServer(Node):
                 self.get_logger().error(f"  - {why}")
             return False
 
+        self._invalidate_rate_cmd()
+        self._unlock_t = None
         if not self._armed:
             _arm(self.cf, True)
             self._armed = True
@@ -1071,7 +1277,12 @@ class CrazyflieServer(Node):
             # rate setpoint mid-air would cut the motors. (2) Roll/pitch to
             # RATE. Only the RPYT path reads these, so the position-controlled
             # takeoff is unaffected; cmd_rate opens once the firmware echoes.
-            self.cf.commander.send_setpoint(0, 0, 0, 0)
+            try:
+                self.cf.commander.send_setpoint(0, 0, 0, 0)
+                self._unlock_t = self._last_tx_t = time.time()
+            except Exception as exc:
+                self.get_logger().error(
+                    f"thrust unlock failed ({exc}); rate handoff will be refused")
             self._set_flightmode(R.RATE)
             self.get_logger().warn("flightmode.stabModeRoll/Pitch -> 0 (rate)")
         # Last ACCEPTED yaw, not this frame's. p.yaw_deg carries whatever
@@ -1094,6 +1305,8 @@ class CrazyflieServer(Node):
         self.get_logger().info("landing")
 
     def stop_motors(self):
+        self._unlock_t = None          # a stopped commander re-locks thrust
+        self._invalidate_rate_cmd()
         try:
             self.cf.commander.send_stop_setpoint()
             try:
@@ -1109,6 +1322,8 @@ class CrazyflieServer(Node):
         self.get_logger().fatal(f"EMERGENCY STOP: {reason}")
         self.state = C.State.STOPPED
         self._hold = None
+        self._unlock_t = None
+        self._invalidate_rate_cmd()
         try:
             self.cf.commander.send_stop_setpoint()
             _arm(self.cf, False)
@@ -1142,6 +1357,10 @@ class CrazyflieServer(Node):
             if req.arm and self.state != C.State.IDLE:
                 self.get_logger().error(
                     f"arm refused: state is {self.state}, not IDLE")
+                return resp
+            why = self._fm_uncertain() if req.arm else None
+            if why:
+                self.get_logger().error(f"arm refused: {why}")
                 return resp
             _arm(self.cf, bool(req.arm))
             self._armed = bool(req.arm)
@@ -1253,7 +1472,7 @@ class CrazyflieServer(Node):
                 pass
             try:
                 self._revert_flightmode("shutdown")
-                time.sleep(0.2)      # let the param write leave before close
+                self._flush_flightmode(self.fm_shutdown_timeout)
             except Exception:
                 pass
         if self.scf is not None:

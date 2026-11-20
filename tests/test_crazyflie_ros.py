@@ -226,16 +226,35 @@ class FakeCf:
         # echo_params is False, which models a write the firmware never acked.
         self.params = {"flightmode.stabModeRoll": "1",
                        "flightmode.stabModePitch": "1",
-                       "flightmode.stabModeYaw": "0"}
+                       "flightmode.stabModeYaw": "0",
+                       "flightmode.althold": "0",
+                       "flightmode.poshold": "0",
+                       "flightmode.posSet": "0"}
         self.echo_params = True
         self.param_writes = []
+        self.throw_on_set = False
+        self._cbs = []
+
+        def _fire(n):
+            for cb in list(me._cbs):
+                cb(n, me.params[n])
 
         def _set(n, v):
             me.param_writes.append((n, v))
+            if me.throw_on_set:
+                raise IOError("radio write failed")
             if me.echo_params:
                 me.params[n] = str(v)
-        self.param = types.SimpleNamespace(set_value=_set,
-                                           get_value=lambda n: me.params[n])
+                _fire(n)
+
+        def _get(n):
+            return me.params[n]           # KeyError == not in the TOC
+        # A readback always reports the firmware's TRUE value, even when our
+        # writes are not being applied.
+        self.param = types.SimpleNamespace(
+            set_value=_set, get_value=_get, request_param_update=_fire,
+            add_update_callback=lambda group=None, name=None, cb=None:
+                me._cbs.append(cb))
         self.extpos = types.SimpleNamespace(
             send_extpos=lambda *a: me.sent.append(("extpos",) + a),
             send_extpose=lambda *a: me.sent.append(("extpose",) + a))
@@ -246,6 +265,8 @@ def make_server(**params):
     for k, v in params.items():
         setattr(srv, k, v)
     srv.cf = FakeCf()
+    srv._wire_cf_callbacks()
+    srv.fm_shutdown_timeout = 0.05
     return srv
 
 
@@ -951,6 +972,134 @@ s = _rate_flying()
 check("P3 transmit itself refuses rates when the per-tick attitude gate is closed",
       (setattr(s, "_rate_att_ok", False), s._transmit(_time.time(), s.latest()),
        _no_rpyt(s))[-1])
+
+print("\n[P4] flight-mode restore is tracked per param, acked, and gates arming (finding 4)")
+RF = ("flightmode.stabModeRoll", "flightmode.stabModePitch")
+s = rate_server(); s.cf.throw_on_set = True
+s.begin_takeoff(0.5)
+check("P4 write that throws still leaves a restore debt (not silently cleared)",
+      set(s._fm_target) == set(RF), f"{s._fm_target}")
+s.cf.throw_on_set = False
+s.state = C.State.IDLE; s._armed = False; s.cf.sent.clear()
+check("P4 takeoff inhibited while mode state is uncertain (debt unacked)",
+      s.begin_takeoff(0.5) is False and s.cf.sent == [] and not s._armed)
+s = rate_server(); fly(s); s.tick()
+s.cf.echo_params = False
+s._srv_stop(None, None)
+check("P4 unacknowledged revert: params still 0 and debt kept for BOTH axes",
+      s.cf.params[RF[0]] == "0" and s.cf.params[RF[1]] == "0"
+      and set(s._fm_target) == set(RF), f"{s._fm_target}")
+s._latest = pose_at(0, 0, 0.02, t=_time.time()); s._last_quat_ok_t = s._latest.recv_time
+check("P4 takeoff refused while a restore is unacknowledged",
+      s.begin_takeoff(0.5) is False and s.state == C.State.IDLE and not s._armed)
+s._srv_arm(types.SimpleNamespace(arm=True), None)
+check("P4 /arm true refused while a restore is unacknowledged", not s._armed)
+s.cf.echo_params = True                     # the radio recovers; service retries
+for n in RF:
+    s._fm_wt[n] -= 5.0
+s._service_flightmode(_time.time()); s._service_flightmode(_time.time())
+check("P4 retry restores both axes and clears the debt",
+      s.cf.params[RF[0]] == "1" and s.cf.params[RF[1]] == "1"
+      and s._fm_target == {}, f"{s.cf.params} {s._fm_target}")
+s._latest = pose_at(0, 0, 0.02, t=_time.time()); s._last_quat_ok_t = s._latest.recv_time
+check("P4 takeoff allowed again once acknowledged", s.begin_takeoff(0.5) is True)
+
+s = rate_server(); fly(s); s.tick()
+s.cf.echo_params = False
+s.cf.params[RF[0]] = "1"                    # roll happened to be restored already
+s._fm_wt[RF[0]] = 0.0
+s._fm_seen[RF[0]] = _time.time()
+s._revert_flightmode("test")
+check("P4 per-axis tracking: only the unacknowledged axis stays owed",
+      (s._service_flightmode(_time.time()) or True)
+      and RF[1] in s._fm_target, f"{s._fm_target}")
+
+s = rate_server(); fly(s); s.tick(); s.cf.echo_params = False
+s.cf.param_writes.clear()
+s.shutdown()
+check("P4 shutdown does not claim success without acks (loud error)",
+      any("NOT confirmed" in m for _, m in s._log.msgs))
+s = rate_server(); fly(s); s.tick()
+s.shutdown()
+check("P4 shutdown with acks: restored, no error",
+      s.cf.params[RF[0]] == "1" and not any("NOT confirmed" in m for _, m in s._log.msgs))
+
+for roll, pitch, yaw in ((0, 1, 0), (1, 0, 0), (0, 0, 1), (1, 1, 1), (0, 0, 0), (2, 1, 0)):
+    s = rate_server(enable=False, setup=False)
+    s.cf.params.update({RF[0]: str(roll), RF[1]: str(pitch),
+                        "flightmode.stabModeYaw": str(yaw)})
+    s._check_flightmode_at_connect()
+    s._service_flightmode(_time.time())
+    check(f"P4 connect recovery from roll={roll} pitch={pitch} yaw={yaw}",
+          s.cf.params[RF[0]] == "1" and s.cf.params[RF[1]] == "1"
+          and s.cf.params["flightmode.stabModeYaw"] == "0",
+          f"{s.cf.params}")
+s = rate_server(enable=True, setup=True)
+del s.cf.params["flightmode.stabModeYaw"]
+check("P4 unreadable flight mode with rate enabled: takeoff refused",
+      s.begin_takeoff(0.5) is False and s.cf.sent == [])
+
+s = rate_server(); fly(s); s.tick(); s._cmd_rate(rmsg(0.1))
+s._on_link_lost("uri", "lost")
+check("P4 link lost invalidates the rate command buffer and latches STOPPED",
+      s._cmd is None and s.state == C.State.STOPPED and not s._rate_active)
+s._srv_reset_emergency(None, None)
+s._latest = pose_at(0, 0, 0.02, t=_time.time()); s._last_quat_ok_t = s._latest.recv_time
+check("P4 takeoff still refused after link loss until reconnect",
+      s.begin_takeoff(0.5) is False)
+
+s = rate_server(); fly(s)
+_real_sleep = _time.sleep
+_time.sleep = lambda *_: (_ for _ in ()).throw(AssertionError("tick slept"))
+try:
+    s.tick(); s._srv_stop(None, None); s.tick()
+    check("P4 no parameter waits inside the control tick or stop path", True)
+except AssertionError as exc:
+    check("P4 no parameter waits inside the control tick or stop path", False, str(exc))
+finally:
+    _time.sleep = _real_sleep
+
+print("\n[P5] rate handoff needs verified decoder params and a ground unlock (finding 5)")
+def _ready():
+    s = rate_server(); fly(s); s.tick()
+    return s
+s = _ready()
+check("P5 baseline: handoff allowed when everything is verified", s._rate_active, s._rate_why)
+for n in ("flightmode.althold", "flightmode.poshold", "flightmode.posSet"):
+    s = rate_server(); s.cf.params[n] = "1"; fly(s); s.tick()
+    s._cmd_rate(rmsg(0.1))
+    check(f"P5 {n}=1 -> handoff refused, cmd_rate not stored",
+          not s._rate_active and s._cmd is None, s._rate_why)
+    s = rate_server(); del s.cf.params[n]; fly(s); s.tick()
+    check(f"P5 {n} missing from the TOC -> refused", not s._rate_active, s._rate_why)
+s = _ready(); s._cmd_rate(rmsg(0.1))
+s.cf.params["flightmode.althold"] = "1"           # another client flips it
+s._fm_refresh_t = 0.0
+s.cf.sent.clear(); s.tick()
+check("P5 althold changed mid-flight: readback catches it, rates stop, hold",
+      not s._rate_active and all(e[0] != "rpyt" for e in s.cf.sent), f"{s.cf.sent}")
+s = rate_server(); fly(s); s.cf._cbs.clear(); s._fm_seen.clear(); s.tick()
+check("P5 cached values with no firmware report are NOT fresh -> refused",
+      not s._rate_active, s._rate_why)
+s = _ready(); s._unlock_t = None; s.tick()
+check("P5 no unlock since the ground state -> refused", not s._rate_active, s._rate_why)
+s = _ready(); s._last_tx_t = _time.time() - 5.0
+s._fm_refresh_t = _time.time()
+s._rate_active, s._rate_why = s._rate_ready(_time.time())
+check("P5 setpoint stream gap re-locks thrust -> unlock no longer valid",
+      not s._rate_active, s._rate_why)
+s = rate_server()
+s.begin_takeoff(0.5)
+check("P5 unlock recorded at takeoff from the ground", s._unlock_t is not None)
+s.cf.sent.clear(); s._srv_stop(None, None)
+check("P5 stop clears the unlock", s._unlock_t is None)
+s = _ready(); s.emergency("x")
+check("P5 emergency clears the unlock", s._unlock_t is None)
+s = rate_server()
+def _boom(*a): raise IOError("radio")
+s.cf.commander.send_setpoint = _boom
+s.begin_takeoff(0.5); s.state = C.State.FLYING; s.tick()
+check("P5 unlock send failure -> handoff refused", not s._rate_active, s._rate_why)
 
 print("\n" + "=" * 62)
 print(f"{PASS} passed, {FAIL} failed")

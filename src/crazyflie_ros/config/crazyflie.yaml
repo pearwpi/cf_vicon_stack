@@ -58,6 +58,7 @@
     rate_max_rp_dps: 120.0    # = isaaclab.bodyrate_rp_max_deg (training cap)
     rate_max_yaw_dps: 360.0   # = isaaclab.bodyrate_yaw_max_deg
     rate_tilt_limit_deg: 60.0 # tilt beyond this while flying rates -> land
+    rate_att_max_age_s: 0.10  # rate output needs an attitude sample this fresh
     # Collective N -> thrust word. Per-motor force [N] = c0 + c1*u + c2*u^2.
     # Default: firmware with CONFIG_ENABLE_THRUST_BAT_COMPENSATED (u linear in
     # N, 0.12 N per motor at 65535, battery compensated onboard).

@@ -66,32 +66,82 @@ They are written only when `enable_rate_cmd:=true` **and**
 zero-thrust RPYT packet at that point, because the firmware RPYT decoder zeroes
 thrust until it has seen one (thrust lock).
 
-## Revert behaviour
+## Takeoff eligibility, emergency latch
 
-If, and only if, this node wrote the params, it restores
-`stabModeRoll/Pitch = 1` on: landing complete, `stop` service, emergency (after
-motors are cut), and node shutdown. At connect, if the firmware is found in
-rate mode while `rate_mode_setup` is false (stale RAM state from a crashed
-session) it is restored to 1 and an error is logged. The params live in
-firmware RAM, so a power cycle also clears them. Not covered: a radio link
-lost mid-flight (see "Known gaps").
+- `takeoff` is accepted only from state IDLE, with measured z at or below
+  `takeoff_ground_z_max` (0.25 m), a finite target height inside the flight
+  volume, and flight-mode state not uncertain (below). All of this is checked
+  BEFORE anything is armed, unlocked or written, so a second `takeoff` while
+  airborne does nothing (it used to send a zero-thrust packet mid-air).
+  `height == 0` means "use `hover_z`"; NaN and negative are refused.
+- An emergency (service or supervisor kill) latches state STOPPED. `stop` does
+  not clear it, `arm:=true` is refused, and `takeoff` is refused until the
+  `<prefix>/reset_emergency` service (std_srvs/Empty) is called.
+- `arm:=true` is refused unless state is IDLE and flight-mode state is certain.
+
+## Flight-mode bookkeeping and revert
+
+The driver keeps a restore debt per param (`stabModeRoll`, `stabModePitch`, and
+`stabModeYaw` if it was found non-default). A debt is created BEFORE the write,
+so a write that throws or is lost still leaves it. It is cleared only when the
+firmware reports the default value AFTER our last write (param update callback),
+and unacknowledged writes are re-sent every 0.5 s by the control tick (no
+waiting in the tick; it only reads the cache and queues writes).
+
+- Restored on: landing complete, `stop`, emergency (after motors are cut), and
+  shutdown. Shutdown waits up to 1.5 s for the acknowledgments, retrying, and
+  logs a loud error naming the params if they never arrive (power-cycle then).
+- At connect ANY non-default combination (roll/pitch not 1, yaw not 0, mixed
+  states, all-rate with an unexpected yaw) is restored, whatever
+  `rate_mode_setup` says, and tracked until acknowledged.
+- While a debt is unacknowledged, or (with `enable_rate_cmd`) a param is
+  unreadable or non-default, or the link was lost, `takeoff` and `arm:=true`
+  are refused.
+- Radio link lost: the cflib `connection_lost`/`disconnected` callbacks clear
+  the command buffer, drop the unlock, latch STOPPED and mark the mode unknown
+  (takeoff stays refused until a reconnect). The firmware watchdog stops the
+  motors; the params stay in RAM until a restore is acknowledged or a reboot.
 
 ## Safety behaviour
 
-- `cmd_rate` is accepted only if: `enable_rate_cmd`, `rate_mode_setup`, the
-  firmware has echoed roll/pitch/yaw = 0 (checked every tick), and state is
-  FLYING. Otherwise it is refused with a throttled warning, not stored, and does
-  not refresh the command watchdog.
-- Stale command (no message for `command_timeout`, 0.30 s): the existing HOLD
-  position fallback.
-- If firmware stops confirming rate mode while rates are being flown, the driver
-  never sends the numbers (they would be read as angles); it holds position.
+- `cmd_rate` is accepted only if: `enable_rate_cmd`, `rate_mode_setup`, state
+  is FLYING, and the rate handoff is verified (checked every tick):
+  - `stabModeRoll/Pitch/Yaw = 0`, each REPORTED by the firmware within 1.5 s
+    (write ack or readback; the driver re-reads them every 0.5 s while flying);
+  - the decoder-affecting params `flightmode.althold`, `flightmode.poshold`,
+    `flightmode.posSet` read back as 0, same freshness. They change how the
+    legacy packet is interpreted (thrust as climb rate, roll/pitch as
+    velocities). A param missing from the firmware TOC counts as NOT verified:
+    refused;
+  - the thrust unlock (zero-thrust packet) was sent on the ground at this
+    takeoff and the setpoint stream has not been interrupted for more than 1 s
+    (the firmware re-locks thrust when its commander times out). stop,
+    emergency and link loss clear it.
+  Otherwise it is refused with a throttled warning, not stored, and does not
+  refresh the command watchdog. If any of this is lost while flying rates, no
+  rate packet is sent and the driver holds position.
+- Stale command (no message for `command_timeout`, 0.30 s): HOLD position.
+  The supervisor evaluates geofence, EKF mismatch and battery BEFORE this hold,
+  so a policy outage never masks them (fence -> land/kill, battery -> land).
+- Attitude: every rate packet needs a fresh (<= `rate_att_max_age_s`, 0.10 s)
+  VALID attitude: the last Vicon quaternion the flip filter accepted and/or the
+  onboard roll/pitch (`imu_log_attitude`). A stale mocap pose (> 150 ms), no
+  fresh valid attitude, or tilt over `rate_tilt_limit_deg` on any fresh
+  source stops rate output immediately and LANDS (the most conservative defined
+  action: a position hold would trust the pose/attitude that just went
+  missing). Mocap dead > 400 ms still cuts the motors.
 - Rate and thrust caps as above; thrust word clamped to 10001..55000.
-- Tilt guard: Vicon tilt (or onboard roll/pitch if `imu_log_attitude`) over
-  `rate_tilt_limit_deg` while flying rates triggers an auto-land.
 - All existing supervisor checks (Vicon loss, flight box, battery) still apply.
 - A new rate command cancels the post-takeoff HOLD point; landing is not
   overridable by it.
+
+RESIDUAL RISK: the driver cannot stop another cflib client (cfclient, a second
+script) from writing `flightmode.*` after our last readback. The 0.5 s refresh
+and 1.5 s freshness window bound how long a changed decoder or flight-mode
+param can go unnoticed, but not eliminate it. Run nothing else against the
+drone during rate flight. Param-update callbacks rely on cflib's
+`add_update_callback`; if a cflib build does not deliver them, freshness can
+never be proven and rate flight is refused (fail safe).
 
 ## Thrust calibration
 
@@ -126,9 +176,8 @@ the driver as a second `--params-file`. Weigh the drone as flown.
 
 ## Known gaps
 
-- No handler for a radio link lost mid-flight: the revert cannot be sent. The
-  firmware watchdog still stops motors; the params stay 0 in RAM until
-  reboot or next connect (connect-time revert handles it unless
-  `rate_mode_setup` is true, in which case they are simply set again).
 - The teleop (`cf_keyboard`/`crazyflie_vicon_teleop.py`) ATTITUDE mode would
   read angles as rates if connected to a drone left in rate mode.
+- Param acknowledgment and the freshness callbacks are exercised only against
+  a mocked cflib; confirm with props off that `add_update_callback` fires for
+  both write echoes and `request_param_update` replies on your cflib version.

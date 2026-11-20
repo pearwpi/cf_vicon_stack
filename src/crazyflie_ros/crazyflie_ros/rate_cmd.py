@@ -65,6 +65,25 @@ RATE_ATT_MAX_AGE_S = 0.10
 FLIGHTMODE_WRITE = ("flightmode.stabModeRoll", "flightmode.stabModePitch")
 FLIGHTMODE_CHECK = FLIGHTMODE_WRITE + ("flightmode.stabModeYaw",)
 RATE, ANGLE = 0, 1
+# Firmware defaults. Anything else, found at connect, is stale RAM state from
+# an earlier session and is restored (roll/pitch -> 1, yaw -> 0).
+FLIGHTMODE_DEFAULT = {"flightmode.stabModeRoll": ANGLE,
+                      "flightmode.stabModePitch": ANGLE,
+                      "flightmode.stabModeYaw": RATE}
+# Params that change how the legacy RPYT decoder interprets a packet:
+# althold -> thrust is a climb rate, poshold/posSet -> roll/pitch are
+# velocities/position offsets. All must read 0 before rates are handed off.
+DECODER_PARAMS = ("flightmode.althold", "flightmode.poshold",
+                  "flightmode.posSet")
+# A param value only counts as verified if the firmware reported it this
+# recently (ack of our write, or a readback), and while flying it is re-read
+# every PARAM_REFRESH_S.
+PARAM_MAX_AGE_S = 1.5
+PARAM_REFRESH_S = 0.5
+FM_RETRY_S = 0.5
+# The thrust unlock (zero-thrust packet) is lost if the setpoint stream stops
+# (the firmware commander times out and re-locks the decoder).
+UNLOCK_TX_GAP_S = 1.0
 
 
 # ==============================================================================
@@ -175,6 +194,12 @@ def rate_mode_confirmed(flightmode):
     not rate: sending a rate as an angle would command a 120 deg tilt.
     """
     return all(flightmode.get(n) == RATE for n in FLIGHTMODE_CHECK)
+
+
+def decoder_config_ok(values):
+    """True only if every decoder-affecting param was READ and is 0.
+    Missing from the firmware TOC (None) is refusal, never assumed 0."""
+    return all(values.get(n) == 0 for n in DECODER_PARAMS)
 
 
 def rate_gate(*, enable, setup, confirmed, state):

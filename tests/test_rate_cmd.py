@@ -187,6 +187,20 @@ def test_attitude_check_never_reuses_stale_or_nonfinite_samples():
     assert _chk(onboard_rp=(70.0, 0.0), onboard_age=0.01) == "tilt"
 
 
+def test_decoder_config_requires_all_params_read_as_zero():
+    ok = {n: 0 for n in R.DECODER_PARAMS}
+    assert R.decoder_config_ok(ok)
+    for n in R.DECODER_PARAMS:
+        assert not R.decoder_config_ok({**ok, n: 1})
+        assert not R.decoder_config_ok({**ok, n: None})      # not in the TOC
+    assert not R.decoder_config_ok({})
+
+
+def test_flightmode_defaults_cover_every_checked_param():
+    assert set(R.FLIGHTMODE_DEFAULT) == set(R.FLIGHTMODE_CHECK)
+    assert R.FLIGHTMODE_DEFAULT["flightmode.stabModeYaw"] == R.RATE
+
+
 if __name__ == "__main__":
     # Same calling convention as the other suites, for the Docker build loop.
     fails = 0
